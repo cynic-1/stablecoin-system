@@ -1,0 +1,32 @@
+[package]
+name = "leap"
+version = "0.1.0"
+edition = "2021"
+description = "LEAP: parallel execution engine with domain-aware scheduling, Hot-Delta sharding, and adaptive backpressure"
+
+[dependencies]
+dashmap = "5.5"
+crossbeam = "0.8"
+rayon = "1.8"
+num_cpus = "1.16"
+once_cell = "1.19"
+arc-swap = "1.6"
+anyhow = "1.0"
+rand = "0.8"
+rand_distr = "0.4"
+sha2 = "0.10"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "leap_bench"
+harness = false
+
+[[bin]]
+name = "leap_benchmark"
+path = "src/main.rs"
+
+[[bin]]
+name = "correctness_check"
+path = "src/bin/correctness_check.rs"

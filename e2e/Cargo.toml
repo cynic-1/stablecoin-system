@@ -1,0 +1,16 @@
+[package]
+name = "e2e"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "e2e_benchmark"
+path = "src/main.rs"
+
+[dependencies]
+leap = { path = "../leap" }
+rand = "0.8"
+rand_distr = "0.4"
+sha2 = "0.10"
+
+[dev-dependencies]

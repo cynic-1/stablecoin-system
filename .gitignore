@@ -1,0 +1,31 @@
+# Rust build artifacts
+**/target/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code local settings
+.claude/
+
+# Narwhal benchmark runtime artifacts
+narwhal/benchmark/.db-*
+narwhal/benchmark/.node-*
+narwhal/benchmark/*.log
+
+# RocksDB stores
+*.db/
+
+# Correctness check results (regenerable)
+leap/correctness_results/
