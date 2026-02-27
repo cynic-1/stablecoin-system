@@ -22,7 +22,7 @@ python3 run_e2e.py "$@" 2>&1
 echo ""
 echo "=== Generating plots ==="
 cd "$SCRIPT_DIR"
-python3 plot.py 2>&1
+python3 plot.py 2>&1 || echo "WARNING: Plot generation failed (install matplotlib: pip3 install matplotlib)"
 
 echo ""
 echo "=== Experiment 3 complete ==="

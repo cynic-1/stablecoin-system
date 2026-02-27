@@ -129,7 +129,17 @@ class LocalBench:
                 )
                 if NUMA_NODES:
                     numa_node = NUMA_NODES[i % len(NUMA_NODES)]
-                    cmd = f'numactl --cpunodebind={numa_node} --membind={numa_node} {cmd}'
+                    # Insert numactl AFTER env var prefix but BEFORE ./node.
+                    # cmd is "KEY=val KEY2=val2 ./node -vvv run ..."
+                    # We need "KEY=val KEY2=val2 numactl ... ./node ..." so the
+                    # shell treats KEY=val as env assignments for the numactl process.
+                    # Prepending numactl before the env prefix would make numactl
+                    # try to exec "KEY=val" as a program name.
+                    idx = cmd.find('./node')
+                    if idx >= 0:
+                        cmd = cmd[:idx] + f'numactl --cpunodebind={numa_node} --membind={numa_node} ' + cmd[idx:]
+                    else:
+                        cmd = f'numactl --cpunodebind={numa_node} --membind={numa_node} {cmd}'
                 log_file = PathMaker.primary_log_file(i)
                 self._background_run(cmd, log_file)
 
