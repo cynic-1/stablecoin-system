@@ -24,6 +24,10 @@ narwhal/benchmark/.db-*
 narwhal/benchmark/.node-*
 narwhal/benchmark/*.log
 
+# Deployment config with private IPs/keys — do not commit
+narwhal/benchmark/hosts.json
+narwhal/benchmark/settings.json
+
 # RocksDB stores
 *.db/
 
