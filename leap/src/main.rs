@@ -10,16 +10,40 @@ use std::io::Write;
 use std::sync::Arc;
 use std::time::Instant;
 
-/// Overhead levels: (label, SHA-256 iters, approx per-tx microseconds)
-/// SHA-256(32 bytes) ≈ 62ns/iter on this hardware.
-const OVERHEAD_LEVELS: &[(&str, u32, u32)] = &[
-    ("0us", 0, 0),
-    ("1us", 16, 1),
-    ("3us", 48, 3),
-    ("10us", 160, 10),
-    ("50us", 800, 50),
-    ("100us", 1600, 100),
-];
+/// Target overhead levels in microseconds.
+const OVERHEAD_TARGETS_US: &[u32] = &[0, 1, 3, 10, 50, 100];
+
+/// Measure how many SHA-256 iterations correspond to 1 microsecond on this CPU.
+/// Runs for ~50ms to get a stable estimate.
+fn calibrate_iters_per_us() -> f64 {
+    use leap::stablecoin::simulate_tx_crypto_work;
+    let warmup_iters = 1000u32;
+    let _ = simulate_tx_crypto_work(42, warmup_iters);
+
+    let measure_iters = 10_000u32;
+    let start = std::time::Instant::now();
+    let _ = simulate_tx_crypto_work(42, measure_iters);
+    let elapsed_us = start.elapsed().as_secs_f64() * 1e6;
+    measure_iters as f64 / elapsed_us
+}
+
+/// Build overhead levels calibrated for the current CPU.
+/// Returns Vec of (label, sha256_iters, target_us).
+/// Labels are leaked to `&'static str` for compatibility with the rest of the code.
+fn calibrated_overhead_levels(iters_per_us: f64) -> Vec<(&'static str, u32, u32)> {
+    OVERHEAD_TARGETS_US
+        .iter()
+        .map(|&us| {
+            let iters = if us == 0 {
+                0u32
+            } else {
+                ((us as f64 * iters_per_us).round() as u32).max(1)
+            };
+            let label: &'static str = Box::leak(format!("{}us", us).into_boxed_str());
+            (label, iters, us)
+        })
+        .collect()
+}
 
 /// Overhead levels where parallel execution is expected to beat serial.
 /// Below this threshold, serial execution dominates due to zero synchronization
@@ -191,6 +215,16 @@ fn main() {
     if let Some(p) = csv_path {
         eprintln!("CSV output: {}", p);
     }
+
+    // Calibrate SHA-256 throughput on this CPU so overhead labels are accurate.
+    let iters_per_us = calibrate_iters_per_us();
+    eprintln!("SHA-256 calibration: {:.1} iters/μs  ({:.0} ns/iter)",
+        iters_per_us, 1000.0 / iters_per_us);
+    let overhead_levels = calibrated_overhead_levels(iters_per_us);
+    eprintln!("Overhead levels: {}",
+        overhead_levels.iter()
+            .map(|(label, iters, _)| format!("{}={}iters", label, iters))
+            .collect::<Vec<_>>().join(", "));
     eprintln!();
 
     let num_txns = 10_000;
@@ -242,7 +276,7 @@ fn main() {
     let mut viable_overheads: Vec<(&str, u32, u32)> = Vec::new();
     let mut all_overhead_viability: Vec<(&str, u32, f64, f64, bool)> = Vec::new();
 
-    for &(oh_label, oh_iters, oh_us) in OVERHEAD_LEVELS {
+    for &(oh_label, oh_iters, oh_us) in &overhead_levels {
         let serial_tps = bench_serial(
             viability_scenario, 1000, oh_iters, num_txns, num_warmups, num_runs,
         );
@@ -311,7 +345,7 @@ fn main() {
         eprintln!("  SKIPPED — no viable overhead levels found.");
         eprintln!("  Falling back to 10μs+ for reference data.\n");
         // Fall back to 10μs+ for at least some data
-        for &(oh_label, oh_iters, oh_us) in OVERHEAD_LEVELS {
+        for &(oh_label, oh_iters, oh_us) in &overhead_levels {
             if oh_us >= 10 {
                 viable_overheads.push((oh_label, oh_iters, oh_us));
             }
