@@ -116,7 +116,7 @@ failed = []
 for ip in hosts:
     print(f"  [{ip}] installing ...", flush=True)
     r = subprocess.run(
-        ['ssh', '-i', key, '-o', 'StrictHostKeyChecking=no',
+        ['ssh', '-tt', '-i', key, '-o', 'StrictHostKeyChecking=no',
          '-o', 'ConnectTimeout=10', f'{user}@{ip}', cmd],
         capture_output=False
     )
