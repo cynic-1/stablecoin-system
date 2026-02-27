@@ -31,8 +31,23 @@ TX_SIZE = 512
 DURATION = 60  # seconds per run (increased from 30 for better steady-state)
 RUNS = 3       # runs per configuration (increased from 2 for statistical confidence)
 
-# Detect available cores for thread allocation.
-TOTAL_CORES = os.cpu_count() or 16
+# Detect physical CPU cores (not hyperthreaded logical cores) for thread allocation.
+# On HT machines os.cpu_count() returns 2x physical cores, causing oversubscription.
+def _physical_cores():
+    try:
+        import subprocess
+        # thread_siblings_list shows siblings sharing a physical core, e.g. "0,64" or "0-3"
+        with open('/sys/devices/system/cpu/cpu0/topology/thread_siblings_list') as f:
+            siblings = f.read().strip()
+        logical = os.cpu_count() or 16
+        # If siblings list has a comma or hyphen, HT is enabled → halve logical count
+        if ',' in siblings or '-' in siblings:
+            return logical // 2
+        return logical
+    except Exception:
+        return os.cpu_count() or 16
+
+TOTAL_CORES = _physical_cores()
 
 NODE_PARAMS = {
     'header_size': 1_000,

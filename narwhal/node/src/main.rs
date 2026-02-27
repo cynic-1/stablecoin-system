@@ -205,8 +205,25 @@ async fn analyze(mut rx_output: Receiver<Certificate>, batch_size: usize) {
         .and_then(|v| v.parse().ok())
         .unwrap_or(512);
 
-    // Convert crypto_us to SHA-256 iterations (~62ns per iter on this hardware).
-    let crypto_iters = (crypto_us as f64 / 0.062) as u32;
+    // Convert crypto_us to SHA-256 iterations via runtime calibration.
+    // Avoids hardcoding 62ns/iter which varies across CPU models and clock speeds.
+    let crypto_iters = {
+        use leap::stablecoin::simulate_tx_crypto_work;
+        // Warmup
+        let _ = simulate_tx_crypto_work(42, 1000);
+        // Measure
+        let measure_iters = 10_000u32;
+        let t0 = std::time::Instant::now();
+        let _ = simulate_tx_crypto_work(42, measure_iters);
+        let elapsed_us = t0.elapsed().as_secs_f64() * 1e6;
+        let iters_per_us = measure_iters as f64 / elapsed_us;
+        let result = if crypto_us == 0 { 0u32 } else {
+            ((crypto_us as f64 * iters_per_us).round() as u32).max(1)
+        };
+        log::info!("SHA-256 calibration: {:.1} iters/μs ({:.0} ns/iter) → {}us = {} iters",
+            iters_per_us, 1000.0 / iters_per_us, crypto_us, result);
+        result
+    };
 
     let hotspot = match pattern_str.as_str() {
         "Uniform" => HotspotConfig::Uniform,

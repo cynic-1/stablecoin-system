@@ -1,8 +1,26 @@
 # Copyright(C) Facebook, Inc. and its affiliates.
+import re
 import subprocess
 from math import ceil
 from os.path import basename, splitext
 from time import sleep
+
+
+def _detect_numa_nodes():
+    """Return list of available NUMA node IDs, or empty list if numactl unavailable."""
+    try:
+        result = subprocess.run(
+            ['numactl', '--hardware'], capture_output=True, text=True, timeout=5
+        )
+        m = re.search(r'available:\s+(\d+)\s+nodes', result.stdout)
+        if m and int(m.group(1)) > 1:
+            return list(range(int(m.group(1))))
+    except Exception:
+        pass
+    return []
+
+
+NUMA_NODES = _detect_numa_nodes()
 
 from benchmark.commands import CommandMaker
 from benchmark.config import (
@@ -98,6 +116,8 @@ class LocalBench:
                     self._background_run(cmd, log_file)
 
             # Run the primaries (except the faulty ones).
+            # On multi-NUMA machines, pin each primary to a NUMA node to prevent
+            # cross-NUMA memory access in the LEAP execution engine.
             for i, address in enumerate(committee.primary_addresses(self.faults)):
                 cmd = CommandMaker.run_primary(
                     PathMaker.key_file(i),
@@ -107,6 +127,9 @@ class LocalBench:
                     debug=debug,
                     env_vars=self.env_vars,
                 )
+                if NUMA_NODES:
+                    numa_node = NUMA_NODES[i % len(NUMA_NODES)]
+                    cmd = f'numactl --cpunodebind={numa_node} --membind={numa_node} {cmd}'
                 log_file = PathMaker.primary_log_file(i)
                 self._background_run(cmd, log_file)
 
