@@ -89,8 +89,48 @@ install_servers() {
     check_hosts_json
     check_ssh
     cd "$BENCHMARK_DIR"
-    info "Running fab static_install ..."
-    fab static_install
+    info "Installing on all servers via SSH ..."
+    python3 - << 'PYEOF'
+import sys, json, subprocess
+sys.path.insert(0, '.')
+
+with open('hosts.json') as f:
+    data = json.load(f)
+
+hosts  = data['hosts']
+key    = data['key_path']
+user   = data.get('username', 'ubuntu')
+repo   = data['repo']['url']
+branch = data['repo']['branch']
+
+cmd = (
+    "sudo apt-get update -qq && "
+    "sudo apt-get install -y -qq build-essential cmake clang && "
+    "curl --proto 'https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && "
+    "source $HOME/.cargo/env && "
+    "rustup default stable && "
+    f"(git clone {repo} || (cd {data['repo']['name']} && git fetch && git checkout {branch} && git pull))"
+)
+
+failed = []
+for ip in hosts:
+    print(f"  [{ip}] installing ...", flush=True)
+    r = subprocess.run(
+        ['ssh', '-i', key, '-o', 'StrictHostKeyChecking=no',
+         '-o', 'ConnectTimeout=10', f'{user}@{ip}', cmd],
+        capture_output=False
+    )
+    if r.returncode != 0:
+        print(f"  [{ip}] FAILED (exit {r.returncode})")
+        failed.append(ip)
+    else:
+        print(f"  [{ip}] OK")
+
+if failed:
+    print(f"\nFailed on: {failed}")
+    sys.exit(1)
+print("\nAll servers installed successfully.")
+PYEOF
     info "Installation complete."
 }
 
