@@ -512,6 +512,39 @@ At high uniform rates, execution becomes the bottleneck (consensus TPS >> exec T
 | 6 | MODERATE | Burn double-counts delta shards | Reset deltas after aggregation | stablecoin.rs |
 | 7 | MODERATE | Backpressure never adapts (executor recreated) | Reuse executor across benchmark runs | main.rs |
 
+## Cross-Machine Portability Fixes (2026-02-27)
+
+在另一台服务器（Intel Xeon Gold 5218, 4-NUMA, 128 逻辑 CPU）上复现实验时结论失效，排查出三个根本原因并修复。
+
+### 根本原因与修复
+
+| # | 问题 | 受影响模块 | 修复 |
+|---|------|-----------|------|
+| 16 | **NUMA 跨节点内存访问**：4-NUMA 服务器上 Rayon 线程跨节点访问 DashMap，延迟 2-3× 增加，并行优势消失 | Exp1 + E2E | `local.py` 自动检测 NUMA 拓扑，用 `numactl --cpunodebind=i --membind=i` 将第 i 个 primary 绑定到第 i 个 NUMA 节点；Exp1 用 `numactl + taskset -c 0-15` 手动绑定 |
+| 17 | **SHA-256 overhead 硬编码**：`leap/src/main.rs` 写死 62ns/iter（本地机器），服务器 2.3GHz 实际约 80-90ns/iter，导致 "10μs" 标签实际代表不同开销 | Exp1 | 启动时自动校准：测量 10000 次 SHA-256 耗时，动态计算各 overhead 级别所需 iter 数；启动输出 `SHA-256 calibration: X.X iters/μs` |
+| 18 | **node/src/main.rs 同样硬编码**：`crypto_iters = crypto_us / 0.062` 假设 62ns/iter | E2E | 同样替换为运行时校准，校准结果写入 log |
+| 19 | **超线程导致线程数翻倍**：`os.cpu_count()=128`（逻辑核），`LEAP_THREADS = 128//4 = 32` 超过单 NUMA 节点 16 物理核，造成过度订阅 | E2E | `run_e2e.py` 改为检测物理核数（读取 `/sys/devices/system/cpu/cpu0/topology/thread_siblings_list`），HT 开启时取逻辑核/2；Xeon 上得到 64 物理核，n=4 时 `LEAP_THREADS=16` |
+
+### 修复后的正确运行方式（服务器）
+
+**Exp1（单 NUMA 节点）：**
+```bash
+export RAYON_NUM_THREADS=16
+numactl --cpunodebind=0 --membind=0 \
+  taskset -c 0-15 \
+  cargo run --release --bin leap_benchmark -- results.csv
+```
+
+**E2E（自动绑定）：**
+```bash
+# git pull 后直接运行，local.py 自动检测 NUMA 并绑定
+python3 narwhal/benchmark/run_e2e_complete.py
+```
+
+### 提交记录
+- `885b124` — feat(leap): auto-calibrate SHA-256 overhead per CPU at runtime
+- `3dd7793` — fix(e2e): cross-machine portability for NUMA + clock speed differences
+
 ## Issues and Solutions
 1. Block-STM's real benchmark depends on the full Diem VM (137-crate workspace). Solution: forked only mvhashmap + parallel-executor core, built standalone with stablecoin-specific benchmark.
 2. Single-thread overhead: LEAP's 1-thread TPS is slightly below LEAP-base due to CADO sorting overhead. This is expected — the sorting cost is amortized at higher thread counts.
