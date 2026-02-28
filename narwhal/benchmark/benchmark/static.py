@@ -131,18 +131,14 @@ class StaticBench:
     """
 
     def __init__(self, extra_features=None, env_vars=None, hosts_file='hosts.json'):
-        from benchmark.remote import Bench
-        from paramiko import RSAKey
-        from paramiko.ssh_exception import PasswordRequiredException, SSHException
+        from benchmark.remote import Bench, load_pkey
         from benchmark.utils import BenchError
 
         manager = StaticInstanceManager(hosts_file)
 
-        # Build a plain-dict connect_kwargs that Fabric Connection/Group accepts.
-        # Fabric's connect_kwargs can be a regular dict with paramiko kwargs.
         try:
-            pkey = RSAKey.from_private_key_file(manager.settings.key_path)
-        except (IOError, PasswordRequiredException, SSHException) as e:
+            pkey = load_pkey(manager.settings.key_path)
+        except Exception as e:
             raise BenchError('Failed to load SSH key', e)
 
         # Monkey-patch a minimal ctx-like object: Bench only reads

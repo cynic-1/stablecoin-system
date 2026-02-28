@@ -17,6 +17,21 @@ from benchmark.logs import LogParser, ParseError
 from benchmark.instance import InstanceManager
 
 
+def load_pkey(key_path):
+    """Load an SSH private key, auto-detecting the key type."""
+    import paramiko
+    errors = []
+    for cls in (paramiko.Ed25519Key, paramiko.RSAKey, paramiko.ECDSAKey):
+        try:
+            return cls.from_private_key_file(key_path)
+        except Exception as e:
+            errors.append(f'{cls.__name__}: {e}')
+    raise IOError(
+        f'Cannot load SSH key {key_path} (tried Ed25519, RSA, ECDSA):\n'
+        + '\n'.join(errors)
+    )
+
+
 class FabricError(Exception):
     ''' Wrapper for Fabric exception with a meaningfull error message. '''
 
@@ -37,9 +52,7 @@ class Bench:
         self.extra_features = extra_features
         self.env_vars = env_vars or {}
         try:
-            ctx.connect_kwargs.pkey = RSAKey.from_private_key_file(
-                self.manager.settings.key_path
-            )
+            ctx.connect_kwargs.pkey = load_pkey(self.manager.settings.key_path)
             self.connect = ctx.connect_kwargs
         except (IOError, PasswordRequiredException, SSHException) as e:
             raise BenchError('Failed to load SSH key', e)
