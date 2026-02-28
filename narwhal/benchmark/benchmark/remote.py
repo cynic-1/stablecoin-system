@@ -184,7 +184,7 @@ class Bench:
             )
         ]
         g = Group(*ips, user=self._user, connect_kwargs=self.connect)
-        g.run(' && '.join(cmd), hide=True)
+        g.run(' && '.join(cmd), hide=False)
 
     def _config(self, hosts, node_parameters, bench_parameters):
         Print.info('Generating configuration files...')
