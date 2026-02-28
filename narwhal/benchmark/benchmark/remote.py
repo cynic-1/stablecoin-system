@@ -8,6 +8,7 @@ from os.path import basename, splitext
 from time import sleep
 from math import ceil
 from copy import deepcopy
+import re
 import subprocess
 
 from benchmark.config import Committee, Key, NodeParameters, BenchParameters, ConfigError
@@ -166,6 +167,39 @@ class Bench:
             return f'{self.settings.repo_name}/{subdir}'
         return self.settings.repo_name
 
+    def _detect_numa(self, host):
+        """Detect NUMA topology on a remote host (cached per host).
+
+        Returns list of NUMA node IDs (e.g. [0, 1]) if multi-NUMA,
+        or empty list if single-NUMA or numactl unavailable.
+        """
+        if not hasattr(self, '_numa_cache'):
+            self._numa_cache = {}
+        if host in self._numa_cache:
+            return self._numa_cache[host]
+        try:
+            c = Connection(host, user=self._user, connect_kwargs=self.connect)
+            result = c.run('numactl --hardware 2>/dev/null || true', hide=True)
+            c.close()
+            m = re.search(r'available:\s+(\d+)\s+nodes', result.stdout)
+            if m and int(m.group(1)) > 1:
+                nodes = list(range(int(m.group(1))))
+                Print.info(f'  {host}: {len(nodes)} NUMA nodes detected')
+                self._numa_cache[host] = nodes
+                return nodes
+        except Exception:
+            pass
+        self._numa_cache[host] = []
+        return []
+
+    @staticmethod
+    def _inject_numactl(cmd, numactl_args):
+        """Insert numactl into a command, after env var prefix but before ./node."""
+        idx = cmd.find('./node')
+        if idx >= 0:
+            return cmd[:idx] + f'numactl {numactl_args} ' + cmd[idx:]
+        return f'numactl {numactl_args} {cmd}'
+
     def _update(self, hosts, collocate):
         if collocate:
             ips = list(set(hosts))
@@ -269,6 +303,9 @@ class Bench:
                 self._background_run(host, cmd, log_file)
 
         # Run the primaries (except the faulty ones).
+        # On multi-NUMA servers, use numactl to distribute memory evenly.
+        # Each server runs one primary, so we use --interleave=all (not
+        # --cpunodebind, which would restrict to one NUMA node's CPUs).
         Print.info('Booting primaries...')
         for i, address in enumerate(committee.primary_addresses(faults)):
             host = Committee.ip(address)
@@ -280,6 +317,9 @@ class Bench:
                 debug=debug,
                 env_vars=self.env_vars,
             )
+            numa_nodes = self._detect_numa(host)
+            if numa_nodes:
+                cmd = self._inject_numactl(cmd, '--interleave=all')
             log_file = PathMaker.primary_log_file(i)
             self._background_run(host, cmd, log_file)
 
