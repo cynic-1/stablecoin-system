@@ -55,23 +55,21 @@ NODE_PARAMS = {
     'max_batch_delay':  200,
 }
 
-# Systems: (name, extra_features, env_vars_base)
-# LEAP_THREADS is injected at runtime (per run_single call).
+# Systems: (name, env_vars_base)
+# Features are compiled once (superset: e2e_exec,mp3bft). Protocol selection
+# is done at runtime via env vars. LEAP_THREADS injected per run_single call.
 SYSTEM_MP3_LEAP = (
     'MP3+LEAP',
-    'e2e_exec,mp3bft',
     {'MP3BFT_K_SLOTS': '4', 'LEAP_ENGINE': 'leap',
      'LEAP_CRYPTO_US': '10', 'LEAP_ACCOUNTS': '1000'},
 )
 SYSTEM_TUSK_LEAPBASE = (
     'Tusk+LeapBase',
-    'e2e_exec',
     {'LEAP_ENGINE': 'leap_base',
      'LEAP_CRYPTO_US': '10', 'LEAP_ACCOUNTS': '1000'},
 )
 SYSTEM_TUSK_SERIAL = (
     'Tusk+Serial',
-    'e2e_exec',
     {'LEAP_ENGINE': 'serial', 'LEAP_THREADS': '1',
      'LEAP_CRYPTO_US': '10', 'LEAP_ACCOUNTS': '1000'},
 )
@@ -133,7 +131,7 @@ def parse_summary(text):
     }
 
 
-def run_single(sys_name, nodes, workers, rate, run_id, extra_features, env_vars,
+def run_single(bench, sys_name, nodes, workers, rate, run_id, env_vars,
                leap_threads):
     bench_params = {
         'faults':    0,
@@ -157,11 +155,8 @@ def run_single(sys_name, nodes, workers, rate, run_id, extra_features, env_vars,
     print(f"  LEAP_THREADS={env.get('LEAP_THREADS', 'N/A')}")
     print(f"{'='*70}")
     try:
-        bench = StaticBench(extra_features=extra_features,
-                            env_vars=env,
-                            hosts_file=HOSTS_FILE)
         result = bench.run(bench_params, NODE_PARAMS, debug=False,
-                           skip_update=True)
+                           skip_update=True, env_vars=env)
         if result is None:
             print("  ERROR: Benchmark failed (no results — check remote logs)")
             return {'status': 'error'}
@@ -229,10 +224,10 @@ def print_summary(results, group_keys):
 
 # ── Experiment runners ─────────────────────────────────────────────────────────
 
-def run_exp(tag, systems, nodes_list, workers, rates, patterns, runs, leap_threads):
+def run_exp(bench, tag, systems, nodes_list, workers, rates, patterns, runs, leap_threads):
     total = len(systems) * len(nodes_list) * len(rates) * len(patterns) * runs
     done, results = 0, []
-    for sys_name, feat, env_base in systems:
+    for sys_name, env_base in systems:
         for nodes in nodes_list:
             for pattern in patterns:
                 for rate in rates:
@@ -250,8 +245,8 @@ def run_exp(tag, systems, nodes_list, workers, rates, patterns, runs, leap_threa
                             variable = nodes
                         else:
                             variable = rate
-                        m = run_single(sys_name, nodes, workers, rate, run_id,
-                                       feat, env, leap_threads)
+                        m = run_single(bench, sys_name, nodes, workers, rate,
+                                       run_id, env, leap_threads)
                         if m['status'] == 'ok':
                             results.append(make_row(tag, sys_name, variable,
                                                     nodes, workers, rate, run_id, m))
@@ -259,32 +254,32 @@ def run_exp(tag, systems, nodes_list, workers, rates, patterns, runs, leap_threa
     return results
 
 
-def run_exp_a(leap_threads):
+def run_exp_a(bench, leap_threads):
     print(f"\n{'#'*70}\n  Exp A: Throughput-Latency Scaling\n{'#'*70}")
-    return run_exp('Exp-A', EXP_A_SYSTEMS, [EXP_A_NODES], 1,
+    return run_exp(bench, 'Exp-A', EXP_A_SYSTEMS, [EXP_A_NODES], 1,
                    EXP_A_RATES, ['Uniform'], RUNS, leap_threads)
 
 
-def run_exp_b(leap_threads):
+def run_exp_b(bench, leap_threads):
     print(f"\n{'#'*70}\n  Exp B: Conflict Pattern Sensitivity\n{'#'*70}")
-    return run_exp('Exp-B', EXP_B_SYSTEMS, [EXP_B_NODES], 1,
+    return run_exp(bench, 'Exp-B', EXP_B_SYSTEMS, [EXP_B_NODES], 1,
                    [EXP_B_RATE], EXP_B_PATTERNS, RUNS, leap_threads)
 
 
-def run_exp_c(available_hosts, leap_threads):
+def run_exp_c(bench, available_hosts, leap_threads):
     nodes_list = [4]
     if available_hosts >= 10:
         nodes_list.append(10)
     if available_hosts >= 20:
         nodes_list.append(20)
     print(f"\n{'#'*70}\n  Exp C: Node Scalability — nodes={nodes_list}\n{'#'*70}")
-    return run_exp('Exp-C', EXP_C_SYSTEMS, nodes_list, 1,
+    return run_exp(bench, 'Exp-C', EXP_C_SYSTEMS, nodes_list, 1,
                    [EXP_C_RATE], ['Uniform'], RUNS, leap_threads)
 
 
-def run_exp_d(leap_threads):
+def run_exp_d(bench, leap_threads):
     print(f"\n{'#'*70}\n  Exp D: Contention × Rate Interaction\n{'#'*70}")
-    return run_exp('Exp-D', EXP_D_SYSTEMS, [EXP_D_NODES], 1,
+    return run_exp(bench, 'Exp-D', EXP_D_SYSTEMS, [EXP_D_NODES], 1,
                    EXP_D_RATES, EXP_D_PATTERNS, RUNS, leap_threads)
 
 
@@ -326,12 +321,13 @@ def main():
 
     print(f"Running experiments: {exps}\n")
 
+    # Create ONE bench instance (reused for all runs — avoids fd leak).
+    # Compile with superset features so binary supports all protocols.
+    bench = StaticBench(extra_features='e2e_exec,mp3bft', hosts_file=HOSTS_FILE)
+
     # One-time update: git pull + compile on all remote servers.
-    # Uses the superset of features so the binary supports all protocols.
     print("Updating remote servers (git pull + compile) ...")
     try:
-        bench = StaticBench(extra_features='e2e_exec,mp3bft',
-                            hosts_file=HOSTS_FILE)
         bench.update(manager.hosts(flat=True))
         print("Remote servers updated.\n")
     except BenchError as e:
@@ -342,10 +338,10 @@ def main():
     all_results = []
 
     exp_map = {
-        'A': lambda: run_exp_a(leap_threads),
-        'B': lambda: run_exp_b(leap_threads),
-        'C': lambda: run_exp_c(available, leap_threads),
-        'D': lambda: run_exp_d(leap_threads),
+        'A': lambda: run_exp_a(bench, leap_threads),
+        'B': lambda: run_exp_b(bench, leap_threads),
+        'C': lambda: run_exp_c(bench, available, leap_threads),
+        'D': lambda: run_exp_d(bench, leap_threads),
     }
 
     for exp_id in exps:

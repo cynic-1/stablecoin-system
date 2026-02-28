@@ -55,15 +55,15 @@ NODE_PARAMS = {
 }
 
 PROTOCOLS_ALL = [
-    ('Tusk',          None,     {}),
-    ('MP3-BFT++_k1', 'mp3bft', {'MP3BFT_K_SLOTS': '1'}),
-    ('MP3-BFT++_k2', 'mp3bft', {'MP3BFT_K_SLOTS': '2'}),
-    ('MP3-BFT++_k4', 'mp3bft', {'MP3BFT_K_SLOTS': '4'}),
+    ('Tusk',          {}),
+    ('MP3-BFT++_k1', {'MP3BFT_K_SLOTS': '1'}),
+    ('MP3-BFT++_k2', {'MP3BFT_K_SLOTS': '2'}),
+    ('MP3-BFT++_k4', {'MP3BFT_K_SLOTS': '4'}),
 ]
 
 PROTOCOLS_SCALING = [
-    ('Tusk',          None,     {}),
-    ('MP3-BFT++_k4', 'mp3bft', {'MP3BFT_K_SLOTS': '4'}),
+    ('Tusk',          {}),
+    ('MP3-BFT++_k4', {'MP3BFT_K_SLOTS': '4'}),
 ]
 
 # Exp A: rate scaling
@@ -104,7 +104,7 @@ def parse_summary(text):
     }
 
 
-def run_single(proto_name, nodes, workers, rate, run_id, extra_features, env_vars):
+def run_single(bench, proto_name, nodes, workers, rate, run_id, env_vars):
     bench_params = {
         'faults':   0,
         'nodes':    nodes,
@@ -119,11 +119,8 @@ def run_single(proto_name, nodes, workers, rate, run_id, extra_features, env_var
     print(f"  {proto_name} | n={nodes} w={workers} rate={rate:,} | run={run_id}")
     print(f"{'='*70}")
     try:
-        bench = StaticBench(extra_features=extra_features,
-                            env_vars=env_vars,
-                            hosts_file=HOSTS_FILE)
         result = bench.run(bench_params, NODE_PARAMS, debug=False,
-                           skip_update=True)
+                           skip_update=True, env_vars=env_vars)
         if result is None:
             print("  ERROR: Benchmark failed (no results — check remote logs)")
             return {'status': 'error'}
@@ -184,18 +181,19 @@ def print_summary(results, group_keys):
 
 # ── Experiment runners ─────────────────────────────────────────────────────────
 
-def run_exp_a():
+def run_exp_a(bench):
     print(f"\n{'#'*70}")
     print(f"  Exp A: Rate Scaling — n={EXP_A_NODES} w={EXP_A_WORKERS} rates={EXP_A_RATES}")
     print(f"{'#'*70}")
     total = len(PROTOCOLS_ALL) * len(EXP_A_RATES) * RUNS
     done, results = 0, []
-    for proto, feat, env in PROTOCOLS_ALL:
+    for proto, env in PROTOCOLS_ALL:
         for rate in EXP_A_RATES:
             for run_id in range(1, RUNS + 1):
                 done += 1
                 print(f"\n[A: {done}/{total}] ", end='')
-                m = run_single(proto, EXP_A_NODES, EXP_A_WORKERS, rate, run_id, feat, env)
+                m = run_single(bench, proto, EXP_A_NODES, EXP_A_WORKERS,
+                               rate, run_id, env)
                 if m['status'] == 'ok':
                     results.append(make_row('A_rate', proto, env,
                                             EXP_A_NODES, EXP_A_WORKERS, rate, run_id, m))
@@ -203,18 +201,19 @@ def run_exp_a():
     return results
 
 
-def run_exp_b():
+def run_exp_b(bench):
     print(f"\n{'#'*70}")
     print(f"  Exp B: Workers Scaling — n={EXP_B_NODES} workers={EXP_B_WORKERS_LIST} rate={EXP_B_RATE}")
     print(f"{'#'*70}")
     total = len(PROTOCOLS_SCALING) * len(EXP_B_WORKERS_LIST) * RUNS
     done, results = 0, []
-    for proto, feat, env in PROTOCOLS_SCALING:
+    for proto, env in PROTOCOLS_SCALING:
         for w in EXP_B_WORKERS_LIST:
             for run_id in range(1, RUNS + 1):
                 done += 1
                 print(f"\n[B: {done}/{total}] ", end='')
-                m = run_single(proto, EXP_B_NODES, w, EXP_B_RATE, run_id, feat, env)
+                m = run_single(bench, proto, EXP_B_NODES, w,
+                               EXP_B_RATE, run_id, env)
                 if m['status'] == 'ok':
                     results.append(make_row('B_workers', proto, env,
                                             EXP_B_NODES, w, EXP_B_RATE, run_id, m))
@@ -222,7 +221,7 @@ def run_exp_b():
     return results
 
 
-def run_exp_c(available_hosts):
+def run_exp_c(bench, available_hosts):
     # Extend node list if we have enough servers.
     nodes_list = EXP_C_NODES_LIST[:]
     if available_hosts >= 10 and 10 not in nodes_list:
@@ -236,12 +235,13 @@ def run_exp_c(available_hosts):
     print(f"{'#'*70}")
     total = len(PROTOCOLS_SCALING) * len(nodes_list) * RUNS
     done, results = 0, []
-    for proto, feat, env in PROTOCOLS_SCALING:
+    for proto, env in PROTOCOLS_SCALING:
         for nodes in nodes_list:
             for run_id in range(1, RUNS + 1):
                 done += 1
                 print(f"\n[C: {done}/{total}] ", end='')
-                m = run_single(proto, nodes, EXP_C_WORKERS, EXP_C_RATE, run_id, feat, env)
+                m = run_single(bench, proto, nodes, EXP_C_WORKERS,
+                               EXP_C_RATE, run_id, env)
                 if m['status'] == 'ok':
                     results.append(make_row('C_nodes', proto, env,
                                             nodes, EXP_C_WORKERS, EXP_C_RATE, run_id, m))
@@ -276,12 +276,13 @@ def main():
     print(f"Running experiments: {exps}")
     print()
 
+    # Create ONE bench instance (reused for all runs — avoids fd leak).
+    # Compile with superset features so binary supports all protocols.
+    bench = StaticBench(extra_features='mp3bft', hosts_file=HOSTS_FILE)
+
     # One-time update: git pull + compile on all remote servers.
-    # Uses the superset of features so the binary supports all protocols.
     print("Updating remote servers (git pull + compile) ...")
     try:
-        bench = StaticBench(extra_features='mp3bft',
-                            hosts_file=HOSTS_FILE)
         bench.update(manager.hosts(flat=True))
         print("Remote servers updated.\n")
     except BenchError as e:
@@ -292,19 +293,19 @@ def main():
     all_results = []
 
     if 'A' in exps:
-        r = run_exp_a()
+        r = run_exp_a(bench)
         all_results.extend(r)
         if r:
             write_csv(r, os.path.join(OUTPUT_DIR, 'exp2_distributed_A.csv'))
 
     if 'B' in exps:
-        r = run_exp_b()
+        r = run_exp_b(bench)
         all_results.extend(r)
         if r:
             write_csv(r, os.path.join(OUTPUT_DIR, 'exp2_distributed_B.csv'))
 
     if 'C' in exps:
-        r = run_exp_c(available)
+        r = run_exp_c(bench, available)
         all_results.extend(r)
         if r:
             write_csv(r, os.path.join(OUTPUT_DIR, 'exp2_distributed_C.csv'))

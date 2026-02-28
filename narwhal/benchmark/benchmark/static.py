@@ -164,7 +164,9 @@ class StaticBench:
                             env_vars=env_vars, manager=manager)
 
     def run(self, bench_params_dict, node_params_dict, debug=False,
-            skip_update=False):
+            skip_update=False, env_vars=None):
+        if env_vars is not None:
+            self._bench.env_vars = env_vars
         return self._bench.run(bench_params_dict, node_params_dict, debug=debug,
                                skip_update=skip_update)
 
