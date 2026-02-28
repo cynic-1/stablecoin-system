@@ -262,9 +262,14 @@ def e2e(ctx, engine='leap', k=4, debug=True):
     }
     try:
         features = 'e2e_exec'
+        import os
+        nodes = bench_params['nodes']
+        total_cores = os.cpu_count() or 8
+        leap_threads = max(1, total_cores // nodes)
         env_vars = {
             'LEAP_ENGINE': str(engine),
-            'LEAP_THREADS': '16',
+            'LEAP_THREADS': str(leap_threads),
+            'RAYON_NUM_THREADS': str(leap_threads),
             'LEAP_CRYPTO_US': '10',
             'LEAP_ACCOUNTS': '1000',
             'BENCH_TX_SIZE': str(bench_params['tx_size']),

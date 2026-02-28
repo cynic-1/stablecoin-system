@@ -214,7 +214,15 @@ fn analyze(mut rx_output: Receiver<Certificate>, batch_size: usize) {
     let num_threads: usize = std::env::var("LEAP_THREADS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(16);
+        .unwrap_or(2);
+
+    // Ensure rayon's global thread pool matches LEAP_THREADS.
+    // Without this, rayon defaults to num_cpus::get() (e.g. 8), so 4 nodes
+    // create 32 CPU-bound rayon threads on 8 cores → extreme oversubscription.
+    // Must be called before any rayon::scope() (first execute_transactions_parallel).
+    if std::env::var("RAYON_NUM_THREADS").is_err() {
+        std::env::set_var("RAYON_NUM_THREADS", num_threads.to_string());
+    }
     let crypto_us: u32 = std::env::var("LEAP_CRYPTO_US")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -278,9 +286,10 @@ fn analyze(mut rx_output: Receiver<Certificate>, batch_size: usize) {
         .and_then(|v| v.parse().ok());
     let mut cert_counter: u64 = 0;
 
+    let rayon_threads = std::env::var("RAYON_NUM_THREADS").unwrap_or_else(|_| "?".into());
     info!(
-        "E2E execution: engine={}, threads={}, crypto_us={}, accounts={}, pattern={}, tx_size={}, seed={:?}",
-        engine, num_threads, crypto_us, num_accounts, pattern_str, tx_size, base_seed
+        "E2E execution: engine={}, threads={}, rayon={}, crypto_us={}, accounts={}, pattern={}, tx_size={}, seed={:?}",
+        engine, num_threads, rayon_threads, crypto_us, num_accounts, pattern_str, tx_size, base_seed
     );
 
     // Create config and executor ONCE before the loop so backpressure can adapt across certificates.
