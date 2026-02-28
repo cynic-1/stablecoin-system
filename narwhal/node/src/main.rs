@@ -364,21 +364,30 @@ fn analyze(mut rx_output: Receiver<Certificate>, batch_size: usize) {
             match engine.as_str() {
                 "leap" => {
                     let prep_start = Instant::now();
-                    cado_ordering(&mut txns);
                     let config = leap_config.as_ref().unwrap();
                     let exec = executor.as_mut().unwrap();
 
-                    // Hot-Delta: detect hotspots.
+                    // Hot-Delta: detect hotspots BEFORE CADO ordering.
+                    // If no hot accounts exist (e.g. Uniform pattern), skip
+                    // CADO+HotDelta+DomainPlan entirely — their overhead
+                    // creates artificial conflict bursts that hurt performance.
                     let mut mgr = HotDeltaManager::new(
                         config.theta_1, config.theta_2, config.p_max,
                     );
                     mgr.detect_hotspots(&txns);
-                    let hot_delta = Some(Arc::new(mgr));
+                    let has_hotspots = !mgr.hot_accounts().is_empty();
 
-                    // Domain-Aware: build segment plan.
-                    let plan = build_domain_plan(&txns, config.l_max);
-                    let bounds = plan.segment_bounds();
-                    let num_txns_total = txns.len();
+                    let (hot_delta, bounds, txn_seg) = if has_hotspots {
+                        // Full LEAP stack: CADO → HotDelta → DomainPlan.
+                        cado_ordering(&mut txns);
+                        let plan = build_domain_plan(&txns, config.l_max);
+                        let b = plan.segment_bounds();
+                        let s = plan.txn_to_segment(txns.len());
+                        (Some(Arc::new(mgr)), b, s)
+                    } else {
+                        // No hotspots: run as plain Block-STM (no CADO overhead).
+                        (None, vec![], vec![])
+                    };
 
                     let args = StablecoinExecArgs {
                         crypto_work_iters: crypto_iters,
@@ -386,7 +395,7 @@ fn analyze(mut rx_output: Receiver<Certificate>, batch_size: usize) {
                         funded_balance: 1_000_000,
                     };
 
-                    exec.set_segment_bounds(bounds, plan.txn_to_segment(num_txns_total));
+                    exec.set_segment_bounds(bounds, txn_seg);
                     let prep_ms = prep_start.elapsed().as_millis();
                     let run_start = Instant::now();
                     let counts = match exec.execute_transactions_parallel(args, txns) {
