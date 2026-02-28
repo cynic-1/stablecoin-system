@@ -27,6 +27,8 @@ import time
 from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# PathMaker uses relative paths (e.g. ../node) — must run from benchmark dir.
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 from benchmark.static import StaticBench, StaticInstanceManager
 from benchmark.utils import BenchError, Print
