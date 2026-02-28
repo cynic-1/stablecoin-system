@@ -64,17 +64,17 @@ NODE_PARAMS = {
 SYSTEM_MP3_LEAP = (
     'MP3+LEAP',
     {'MP3BFT_K_SLOTS': '4', 'LEAP_ENGINE': 'leap',
-     'LEAP_CRYPTO_US': '10', 'LEAP_ACCOUNTS': '1000'},
+     'LEAP_CRYPTO_US': '50', 'LEAP_ACCOUNTS': '1000'},
 )
 SYSTEM_TUSK_LEAPBASE = (
     'Tusk+BlockSTM',
     {'CONSENSUS_PROTOCOL': 'tusk', 'LEAP_ENGINE': 'leap_base',
-     'LEAP_CRYPTO_US': '10', 'LEAP_ACCOUNTS': '1000'},
+     'LEAP_CRYPTO_US': '50', 'LEAP_ACCOUNTS': '1000'},
 )
 SYSTEM_TUSK_SERIAL = (
     'Tusk+Serial',
     {'CONSENSUS_PROTOCOL': 'tusk', 'LEAP_ENGINE': 'serial', 'LEAP_THREADS': '1',
-     'LEAP_CRYPTO_US': '10', 'LEAP_ACCOUNTS': '1000'},
+     'LEAP_CRYPTO_US': '50', 'LEAP_ACCOUNTS': '1000'},
 )
 
 # Exp A: throughput-latency scaling (Uniform)
