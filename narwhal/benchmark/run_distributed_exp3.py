@@ -161,6 +161,9 @@ def run_single(sys_name, nodes, workers, rate, run_id, extra_features, env_vars,
                             env_vars=env,
                             hosts_file=HOSTS_FILE)
         result = bench.run(bench_params, NODE_PARAMS, debug=False)
+        if result is None:
+            print("  ERROR: Benchmark failed (no results — check remote logs)")
+            return {'status': 'error'}
         summary = result.result()
         print(summary)
         metrics = parse_summary(summary)
