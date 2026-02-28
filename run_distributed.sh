@@ -16,6 +16,8 @@
 #   ./run_distributed.sh exp3 A B        # only Exp3-A and Exp3-B
 #   ./run_distributed.sh exp3 --threads 32  # E2E with 32 threads/node
 #   ./run_distributed.sh all             # run exp1 + exp2 + exp3
+#   ./run_distributed.sh logs            # list saved remote logs
+#   ./run_distributed.sh logs exp3 grep ExecStats  # search logs
 
 set -e
 
@@ -209,8 +211,39 @@ case "$COMMAND" in
         echo "  Exp2: experiments/exp2_consensus/results/raw/exp2_distributed_*.csv"
         echo "  Exp3: experiments/exp3_e2e/results/raw/exp3_distributed_*.csv"
         ;;
+    logs)
+        section "Saved Remote Logs"
+        SAVED_LOGS="$BENCHMARK_DIR/saved_logs"
+        if [ ! -d "$SAVED_LOGS" ]; then
+            warn "No saved logs yet. Run exp2 or exp3 first."
+            exit 0
+        fi
+        FILTER="${1:-}"
+        SEARCH="${2:-}"
+        if [ -n "$FILTER" ] && [ -n "$SEARCH" ]; then
+            # e.g. ./run_distributed.sh logs exp3 "ExecStats"
+            info "Searching '$SEARCH' in saved_logs/$FILTER/"
+            grep -r "$SEARCH" "$SAVED_LOGS/$FILTER/" 2>/dev/null || warn "No matches."
+        elif [ -n "$FILTER" ]; then
+            info "Logs in saved_logs/$FILTER/:"
+            ls -1d "$SAVED_LOGS/$FILTER"/*/ 2>/dev/null || warn "No logs for $FILTER."
+        else
+            info "All saved logs:"
+            for d in "$SAVED_LOGS"/*/; do
+                exp=$(basename "$d")
+                count=$(find "$d" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+                echo "  $exp: $count runs"
+            done
+            echo ""
+            echo "Usage:"
+            echo "  $0 logs                              # list all"
+            echo "  $0 logs exp3                         # list exp3 runs"
+            echo "  $0 logs exp3 ExecStats               # grep ExecStats in exp3 logs"
+            echo "  $0 logs exp3 'recv_ms=\|run_ms='     # grep timing fields"
+        fi
+        ;;
     help|--help|-h)
-        sed -n '2,20p' "$0" | sed 's/^# //'
+        sed -n '2,21p' "$0" | sed 's/^# //'
         ;;
     *)
         error "Unknown command: $COMMAND. Run '$0 help' for usage."

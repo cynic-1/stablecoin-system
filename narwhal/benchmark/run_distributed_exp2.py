@@ -22,6 +22,7 @@ Output:
 import csv
 import os
 import re
+import shutil
 import sys
 import time
 from collections import defaultdict
@@ -106,7 +107,27 @@ def parse_summary(text):
     }
 
 
-def run_single(bench, proto_name, nodes, workers, rate, run_id, env_vars):
+SAVED_LOGS_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    'saved_logs', 'exp2',
+)
+
+
+def save_logs(tag, proto_name, rate, run_id):
+    """Copy logs/ to saved_logs/exp2/{tag}_{proto}_{rate}_run{id}/ for later inspection."""
+    src = 'logs'
+    if not os.path.isdir(src):
+        return
+    slug = proto_name.replace('+', '_').replace(' ', '_')
+    dest = os.path.join(SAVED_LOGS_DIR, f'{tag}_{slug}_rate{rate}_run{run_id}')
+    os.makedirs(dest, exist_ok=True)
+    for f in os.listdir(src):
+        shutil.copy2(os.path.join(src, f), os.path.join(dest, f))
+    print(f"  → Logs saved: {dest}")
+
+
+def run_single(bench, proto_name, nodes, workers, rate, run_id, env_vars,
+               tag=''):
     bench_params = {
         'faults':   0,
         'nodes':    nodes,
@@ -126,6 +147,7 @@ def run_single(bench, proto_name, nodes, workers, rate, run_id, env_vars):
         if result is None:
             print("  ERROR: Benchmark failed (no results — check remote logs)")
             return {'status': 'error'}
+        save_logs(tag, proto_name, rate, run_id)
         summary = result.result()
         print(summary)
         metrics = parse_summary(summary)
@@ -195,7 +217,7 @@ def run_exp_a(bench):
                 done += 1
                 print(f"\n[A: {done}/{total}] ", end='')
                 m = run_single(bench, proto, EXP_A_NODES, EXP_A_WORKERS,
-                               rate, run_id, env)
+                               rate, run_id, env, tag='A')
                 if m['status'] == 'ok':
                     results.append(make_row('A_rate', proto, env,
                                             EXP_A_NODES, EXP_A_WORKERS, rate, run_id, m))
@@ -215,7 +237,7 @@ def run_exp_b(bench):
                 done += 1
                 print(f"\n[B: {done}/{total}] ", end='')
                 m = run_single(bench, proto, EXP_B_NODES, w,
-                               EXP_B_RATE, run_id, env)
+                               EXP_B_RATE, run_id, env, tag='B')
                 if m['status'] == 'ok':
                     results.append(make_row('B_workers', proto, env,
                                             EXP_B_NODES, w, EXP_B_RATE, run_id, m))
@@ -243,7 +265,7 @@ def run_exp_c(bench, available_hosts):
                 done += 1
                 print(f"\n[C: {done}/{total}] ", end='')
                 m = run_single(bench, proto, nodes, EXP_C_WORKERS,
-                               EXP_C_RATE, run_id, env)
+                               EXP_C_RATE, run_id, env, tag='C')
                 if m['status'] == 'ok':
                     results.append(make_row('C_nodes', proto, env,
                                             nodes, EXP_C_WORKERS, EXP_C_RATE, run_id, m))

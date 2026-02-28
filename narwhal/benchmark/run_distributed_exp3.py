@@ -23,6 +23,7 @@ import argparse
 import csv
 import os
 import re
+import shutil
 import sys
 import time
 from collections import defaultdict
@@ -129,8 +130,27 @@ def parse_summary(text):
     }
 
 
+SAVED_LOGS_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    'saved_logs', 'exp3',
+)
+
+
+def save_logs(tag, sys_name, rate, run_id):
+    """Copy logs/ to saved_logs/exp3/{tag}_{sys}_{rate}_run{id}/ for later inspection."""
+    src = 'logs'
+    if not os.path.isdir(src):
+        return
+    slug = sys_name.replace('+', '_')
+    dest = os.path.join(SAVED_LOGS_DIR, f'{tag}_{slug}_rate{rate}_run{run_id}')
+    os.makedirs(dest, exist_ok=True)
+    for f in os.listdir(src):
+        shutil.copy2(os.path.join(src, f), os.path.join(dest, f))
+    print(f"  → Logs saved: {dest}")
+
+
 def run_single(bench, sys_name, nodes, workers, rate, run_id, env_vars,
-               leap_threads):
+               leap_threads, tag=''):
     bench_params = {
         'faults':    0,
         'nodes':     nodes,
@@ -160,6 +180,8 @@ def run_single(bench, sys_name, nodes, workers, rate, run_id, env_vars,
         if result is None:
             print("  ERROR: Benchmark failed (no results — check remote logs)")
             return {'status': 'error'}
+        # Save logs before they get overwritten by the next run.
+        save_logs(tag, sys_name, rate, run_id)
         summary = result.result()
         print(summary)
         metrics = parse_summary(summary)
@@ -244,7 +266,7 @@ def run_exp(bench, tag, systems, nodes_list, workers, rates, patterns, runs, lea
                         else:
                             variable = rate
                         m = run_single(bench, sys_name, nodes, workers, rate,
-                                       run_id, env, leap_threads)
+                                       run_id, env, leap_threads, tag=tag)
                         if m['status'] == 'ok':
                             results.append(make_row(tag, sys_name, variable,
                                                     nodes, workers, rate, run_id, m))
