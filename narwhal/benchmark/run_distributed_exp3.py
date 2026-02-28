@@ -101,7 +101,7 @@ EXP_D_SYSTEMS  = [SYSTEM_MP3_LEAP, SYSTEM_TUSK_LEAPBASE]
 FIELDNAMES = [
     'experiment', 'system', 'variable', 'nodes', 'workers', 'rate', 'run',
     'stablecoin_tps', 'stablecoin_latency_ms', 'success_rate',
-    'total_txns', 'successful_txns',
+    'committed_txns', 'executed_txns', 'exec_ratio',
     'consensus_tps', 'consensus_bps', 'consensus_latency_ms',
     'e2e_tps', 'e2e_bps', 'e2e_latency_ms',
     'with_exec_tps', 'with_exec_bps', 'with_exec_latency_ms',
@@ -118,8 +118,9 @@ def parse_summary(text):
         'stablecoin_tps':         extract(r'Stablecoin TPS:\s+([\d,]+)'),
         'stablecoin_latency_ms':  extract(r'Stablecoin latency:\s+([\d,]+)'),
         'success_rate':           extract(r'Success rate:\s+([\d.]+)'),
-        'total_txns':             extract(r'Total transactions:\s+([\d,]+)'),
-        'successful_txns':        extract(r'Successful transactions:\s+([\d,]+)'),
+        'committed_txns':         extract(r'Committed transactions:\s+([\d,]+)'),
+        'executed_txns':          extract(r'Executed transactions:\s+([\d,]+)'),
+        'exec_ratio':             extract(r'Execution ratio:\s+([\d.]+)'),
         'consensus_tps':          extract(r'Consensus TPS:\s+([\d,]+)'),
         'consensus_bps':          extract(r'Consensus BPS:\s+([\d,]+)'),
         'consensus_latency_ms':   extract(r'Consensus latency:\s+([\d,]+)'),
@@ -184,8 +185,9 @@ def make_row(tag, sys_name, variable, nodes, workers, rate, run_id, metrics):
         'stablecoin_tps':         metrics.get('stablecoin_tps', 0),
         'stablecoin_latency_ms':  metrics.get('stablecoin_latency_ms', 0),
         'success_rate':           metrics.get('success_rate', 0),
-        'total_txns':             metrics.get('total_txns', 0),
-        'successful_txns':        metrics.get('successful_txns', 0),
+        'committed_txns':         metrics.get('committed_txns', 0),
+        'executed_txns':          metrics.get('executed_txns', 0),
+        'exec_ratio':             metrics.get('exec_ratio', 0),
         'consensus_tps':          metrics.get('consensus_tps', 0),
         'consensus_bps':          metrics.get('consensus_bps', 0),
         'consensus_latency_ms':   metrics.get('consensus_latency_ms', 0),
@@ -213,15 +215,14 @@ def print_summary(results, group_keys):
     for r in results:
         grouped[tuple(r[k] for k in group_keys)].append(r)
     header = ''.join(f'{k:<20}' for k in group_keys)
-    print(f"{header} {'SC.TPS':>10} {'SC.Lat':>10} {'Success%':>10} {'Con.TPS':>10} {'Con.Lat':>10}")
-    print('-' * (20 * len(group_keys) + 54))
+    print(f"{header} {'SC.TPS':>10} {'SC.Lat':>10} {'Committed':>10} {'Executed':>10} {'ExecRate':>10} {'Con.Lat':>10}")
+    print('-' * (20 * len(group_keys) + 64))
     for key, runs in sorted(grouped.items()):
         avg = lambda field: sum(r[field] for r in runs) / len(runs)
         row = ''.join(f'{str(v):<20}' for v in key)
-        sc_rate = avg('success_rate')
         print(f"{row} {avg('stablecoin_tps'):>10,.0f} {avg('stablecoin_latency_ms'):>10,.0f}"
-              f" {sc_rate:>10.4f} {avg('consensus_tps'):>10,.0f}"
-              f" {avg('consensus_latency_ms'):>10,.0f}")
+              f" {avg('committed_txns'):>10,.0f} {avg('executed_txns'):>10,.0f}"
+              f" {avg('exec_ratio'):>10.4f} {avg('consensus_latency_ms'):>10,.0f}")
 
 
 # ── Experiment runners ─────────────────────────────────────────────────────────

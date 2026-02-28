@@ -285,6 +285,12 @@ class LogParser:
         stablecoin_latency = self._stablecoin_latency() * 1_000
         success_rate = self._success_rate()
 
+        # Committed vs executed transaction counts.
+        committed_txns = round(sum(self.sizes.values()) / self.size[0]) \
+            if self.sizes and self.size[0] > 0 else 0
+        executed_txns = self.total_ok
+        exec_ratio = executed_txns / committed_txns if committed_txns > 0 else 0
+
         result = (
             '\n'
             '-----------------------------------------\n'
@@ -332,8 +338,9 @@ class LogParser:
                 f' Stablecoin TPS: {round(stablecoin_tps):,} tx/s\n'
                 f' Stablecoin latency: {round(stablecoin_latency):,} ms\n'
                 f' Success rate: {success_rate:.4f}\n'
-                f' Total transactions: {self.total_txns:,}\n'
-                f' Successful transactions: {self.total_ok:,}\n'
+                f' Committed transactions: {committed_txns:,}\n'
+                f' Executed transactions: {executed_txns:,}\n'
+                f' Execution ratio: {exec_ratio:.4f}\n'
             )
 
         result += '-----------------------------------------\n'
