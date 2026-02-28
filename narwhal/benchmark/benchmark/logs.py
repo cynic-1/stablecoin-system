@@ -192,9 +192,10 @@ class LogParser:
         return mean(latency) if latency else 0
 
     def _with_exec_throughput(self):
-        if not self.executions:
+        if not self.executions or not self.commits:
             return 0, 0, 0
-        start, end = min(self.proposals.values()), max(self.executions.values())
+        start = min(self.proposals.values())
+        end = max(self.commits.values())
         duration = end - start
         if duration <= 0:
             return 0, 0, 0
@@ -235,11 +236,16 @@ class LogParser:
         return mean(latency) if latency else 0
 
     def _stablecoin_tps(self):
-        """TPS = total successful txns / (last execution time - first client send)."""
-        if not self.executions or self.total_ok == 0:
+        """TPS = total successful txns / benchmark duration.
+
+        Uses max(commits) as end time (not max(executions)) so that TPS
+        reflects the full benchmark window even when execution stalls or
+        panics partway through.
+        """
+        if not self.commits or self.total_ok == 0:
             return 0, 0
         start = min(self.start)
-        end = max(self.executions.values())
+        end = max(self.commits.values())
         duration = end - start
         if duration <= 0:
             return 0, 0
