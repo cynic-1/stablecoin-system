@@ -53,7 +53,7 @@ NODE_PARAMS = {
     'gc_depth':         50,
     'sync_retry_delay': 10_000,
     'sync_retry_nodes': 3,
-    'batch_size':       500_000,
+    'batch_size':       5_000_000,
     'max_batch_delay':  200,
 }
 
