@@ -122,7 +122,8 @@ def run_single(proto_name, nodes, workers, rate, run_id, extra_features, env_var
         bench = StaticBench(extra_features=extra_features,
                             env_vars=env_vars,
                             hosts_file=HOSTS_FILE)
-        result = bench.run(bench_params, NODE_PARAMS, debug=False)
+        result = bench.run(bench_params, NODE_PARAMS, debug=False,
+                           skip_update=True)
         if result is None:
             print("  ERROR: Benchmark failed (no results — check remote logs)")
             return {'status': 'error'}
@@ -274,6 +275,18 @@ def main():
     exps = [e.upper() for e in sys.argv[1:]] if len(sys.argv) > 1 else ['A', 'B', 'C']
     print(f"Running experiments: {exps}")
     print()
+
+    # One-time update: git pull + compile on all remote servers.
+    # Uses the superset of features so the binary supports all protocols.
+    print("Updating remote servers (git pull + compile) ...")
+    try:
+        bench = StaticBench(extra_features='mp3bft',
+                            hosts_file=HOSTS_FILE)
+        bench.update(manager.hosts(flat=True))
+        print("Remote servers updated.\n")
+    except BenchError as e:
+        print(f"ERROR: Failed to update remote servers: {e}")
+        sys.exit(1)
 
     start = time.time()
     all_results = []

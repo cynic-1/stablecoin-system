@@ -163,8 +163,14 @@ class StaticBench:
         self._bench = Bench(ctx, extra_features=extra_features,
                             env_vars=env_vars, manager=manager)
 
-    def run(self, bench_params_dict, node_params_dict, debug=False):
-        return self._bench.run(bench_params_dict, node_params_dict, debug=debug)
+    def run(self, bench_params_dict, node_params_dict, debug=False,
+            skip_update=False):
+        return self._bench.run(bench_params_dict, node_params_dict, debug=debug,
+                               skip_update=skip_update)
+
+    def update(self, hosts):
+        """Run git pull + compile on remote servers (call once before all runs)."""
+        self._bench._update(hosts, collocate=True)
 
     def install(self):
         return self._bench.install()

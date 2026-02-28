@@ -335,7 +335,8 @@ class Bench:
         Print.info('Parsing logs and computing performance...')
         return LogParser.process(PathMaker.logs_path(), faults=faults)
 
-    def run(self, bench_parameters_dict, node_parameters_dict, debug=False):
+    def run(self, bench_parameters_dict, node_parameters_dict, debug=False,
+            skip_update=False):
         assert isinstance(debug, bool)
         Print.heading('Starting remote benchmark')
         try:
@@ -350,12 +351,13 @@ class Bench:
             Print.warn('There are not enough instances available')
             return
 
-        # Update nodes.
-        try:
-            self._update(selected_hosts, bench_parameters.collocate)
-        except (GroupException, ExecutionError) as e:
-            e = FabricError(e) if isinstance(e, GroupException) else e
-            raise BenchError('Failed to update nodes', e)
+        # Update nodes (git pull + compile). Skip if already done.
+        if not skip_update:
+            try:
+                self._update(selected_hosts, bench_parameters.collocate)
+            except (GroupException, ExecutionError) as e:
+                e = FabricError(e) if isinstance(e, GroupException) else e
+                raise BenchError('Failed to update nodes', e)
 
         # Upload all configuration files.
         try:
