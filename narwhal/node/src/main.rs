@@ -180,7 +180,8 @@ async fn analyze(mut rx_output: Receiver<Certificate>, batch_size: usize) {
     use leap::executor::ParallelTransactionExecutor;
     use leap::hot_delta::HotDeltaManager;
     use leap::stablecoin::{
-        serial_execute, HotspotConfig, StablecoinExecArgs, StablecoinExecutor,
+        count_parallel_outcomes, serial_execute_counted, ExecCounts,
+        HotspotConfig, StablecoinExecArgs, StablecoinExecutor,
         StablecoinTx, StablecoinWorkloadGenerator,
     };
     use std::sync::Arc;
@@ -283,8 +284,9 @@ async fn analyze(mut rx_output: Receiver<Certificate>, batch_size: usize) {
         let batch_digests: Vec<crypto::Digest> =
             certificate.header.payload.keys().cloned().collect();
 
-        // Generate funded stablecoin transactions matching the batch count.
-        let mut txns: Vec<StablecoinTx> = generator.generate_with_funding(num_txns, 1_000_000);
+        // Generate transfer-only stablecoin transactions.
+        // Accounts are pre-funded via funded_balance (simulates persistent state).
+        let mut txns: Vec<StablecoinTx> = generator.generate(num_txns);
 
         let engine_clone = engine.clone();
         let executor_clone = shared_executor.clone();
@@ -292,7 +294,8 @@ async fn analyze(mut rx_output: Receiver<Certificate>, batch_size: usize) {
         let exec_start = Instant::now();
 
         // Run execution on a blocking thread (LEAP uses rayon internally).
-        let exec_result = tokio::task::spawn_blocking(move || {
+        // Returns ExecCounts for success/failure tracking.
+        let exec_result = tokio::task::spawn_blocking(move || -> ExecCounts {
             match engine_clone.as_str() {
                 "leap" => {
                     cado_ordering(&mut txns);
@@ -315,26 +318,34 @@ async fn analyze(mut rx_output: Receiver<Certificate>, batch_size: usize) {
                     let args = StablecoinExecArgs {
                         crypto_work_iters: crypto_iters,
                         hot_delta,
+                        funded_balance: 1_000_000,
                     };
 
                     executor.set_segment_bounds(bounds, plan.txn_to_segment(num_txns_total));
-                    let _outputs = executor
-                        .execute_transactions_parallel(args, txns);
+                    match executor.execute_transactions_parallel(args, txns) {
+                        Ok(outputs) => count_parallel_outcomes(&outputs),
+                        Err(_) => ExecCounts::default(),
+                    }
                 }
                 "leap_base" => {
-                    cado_ordering(&mut txns);
+                    // No CADO ordering: baseline uses random transaction order,
+                    // matching Exp-1 where LEAP-base has use_cado=false.
                     let executor_arc = executor_clone.unwrap();
                     let executor = executor_arc.lock().unwrap();
                     let args = StablecoinExecArgs {
                         crypto_work_iters: crypto_iters,
                         hot_delta: None,
+                        funded_balance: 1_000_000,
                     };
-                    let _outputs = executor
-                        .execute_transactions_parallel(args, txns);
+                    match executor.execute_transactions_parallel(args, txns) {
+                        Ok(outputs) => count_parallel_outcomes(&outputs),
+                        Err(_) => ExecCounts::default(),
+                    }
                 }
                 _ => {
                     // serial
-                    let _state = serial_execute(&txns, crypto_iters);
+                    let (_state, counts) = serial_execute_counted(&txns, crypto_iters, 1_000_000);
+                    counts
                 }
             }
         })
@@ -342,9 +353,19 @@ async fn analyze(mut rx_output: Receiver<Certificate>, batch_size: usize) {
 
         let exec_ms = exec_start.elapsed().as_millis();
 
-        if let Err(e) = exec_result {
-            info!("Execution error B{}({}) : {}", round, num_txns, e);
-            continue;
+        match exec_result {
+            Err(e) => {
+                info!("Execution error B{}({}) : {}", round, num_txns, e);
+                continue;
+            }
+            Ok(counts) => {
+                // Log execution stats (one line per certificate, for TPS/success rate).
+                info!(
+                    "ExecStats B{} total={} ok={} fail={} exec_ms={}",
+                    round, counts.total, counts.successful,
+                    counts.total - counts.successful, exec_ms
+                );
+            }
         }
 
         // Log per-batch digest (same format as "Committed") for the parser.

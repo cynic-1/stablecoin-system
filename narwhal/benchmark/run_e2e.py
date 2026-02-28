@@ -130,6 +130,8 @@ OUTPUT_DIR = os.path.join(
 
 FIELDNAMES = [
     'experiment', 'system', 'variable', 'nodes', 'workers', 'rate', 'run',
+    'stablecoin_tps', 'stablecoin_latency_ms', 'success_rate',
+    'total_txns', 'successful_txns',
     'consensus_tps', 'consensus_bps', 'consensus_latency_ms',
     'e2e_tps', 'e2e_bps', 'e2e_latency_ms',
     'with_exec_tps', 'with_exec_bps', 'with_exec_latency_ms',
@@ -144,6 +146,11 @@ def parse_summary(summary_text):
         return float(m.group(1).replace(',', '')) if m else 0.0
 
     return {
+        'stablecoin_tps': extract(r'Stablecoin TPS:\s+([\d,]+)', summary_text),
+        'stablecoin_latency_ms': extract(r'Stablecoin latency:\s+([\d,]+)', summary_text),
+        'success_rate': extract(r'Success rate:\s+([\d.]+)', summary_text),
+        'total_txns': extract(r'Total transactions:\s+([\d,]+)', summary_text),
+        'successful_txns': extract(r'Successful transactions:\s+([\d,]+)', summary_text),
         'consensus_tps': extract(r'Consensus TPS:\s+([\d,]+)', summary_text),
         'consensus_bps': extract(r'Consensus BPS:\s+([\d,]+)', summary_text),
         'consensus_latency_ms': extract(r'Consensus latency:\s+([\d,]+)', summary_text),
@@ -175,7 +182,8 @@ def run_single_benchmark(system_name, nodes, workers, rate, run_id,
 
     # Prevent CPU oversubscription on localhost: each node process runs
     # LEAP_THREADS rayon workers, so nodes * threads must fit in TOTAL_CORES.
-    if env.get('LEAP_ENGINE') not in ('serial',):
+    # Skip if caller already set LEAP_THREADS (e.g. thread-scaling experiment).
+    if env.get('LEAP_ENGINE') not in ('serial',) and 'LEAP_THREADS' not in env_vars:
         threads = leap_threads_for_nodes(nodes)
         env['LEAP_THREADS'] = str(threads)
         env['RAYON_NUM_THREADS'] = str(threads)
@@ -212,6 +220,11 @@ def make_result_row(experiment, system_name, variable, nodes, workers, rate,
         'workers': workers,
         'rate': rate,
         'run': run_id,
+        'stablecoin_tps': metrics.get('stablecoin_tps', 0),
+        'stablecoin_latency_ms': metrics.get('stablecoin_latency_ms', 0),
+        'success_rate': metrics.get('success_rate', 0),
+        'total_txns': metrics.get('total_txns', 0),
+        'successful_txns': metrics.get('successful_txns', 0),
         'consensus_tps': metrics.get('consensus_tps', 0),
         'consensus_bps': metrics.get('consensus_bps', 0),
         'consensus_latency_ms': metrics.get('consensus_latency_ms', 0),
@@ -242,18 +255,19 @@ def print_summary(results, group_keys):
         grouped[key].append(r)
 
     header_parts = [f'{k:<16}' for k in group_keys]
-    print(f"{''.join(header_parts)} {'Con.TPS':>10} {'Con.Lat':>10} "
-          f"{'Exec TPS':>10} {'Exec Lat':>10}")
-    print('-' * (16 * len(group_keys) + 44))
+    print(f"{''.join(header_parts)} {'SC.TPS':>10} {'SC.Lat':>10} "
+          f"{'Success%':>10} {'Con.TPS':>10} {'Con.Lat':>10}")
+    print('-' * (16 * len(group_keys) + 54))
 
     for key, runs in sorted(grouped.items()):
+        avg_sctps = sum(float(r.get('stablecoin_tps', 0)) for r in runs) / len(runs)
+        avg_sclat = sum(float(r.get('stablecoin_latency_ms', 0)) for r in runs) / len(runs)
+        avg_sr = sum(float(r.get('success_rate', 0)) for r in runs) / len(runs)
         avg_ctps = sum(float(r['consensus_tps']) for r in runs) / len(runs)
         avg_clat = sum(float(r['consensus_latency_ms']) for r in runs) / len(runs)
-        avg_etps = sum(float(r['with_exec_tps']) for r in runs) / len(runs)
-        avg_elat = sum(float(r['with_exec_latency_ms']) for r in runs) / len(runs)
         parts = [f'{str(v):<16}' for v in key]
-        print(f"{''.join(parts)} {avg_ctps:>10,.0f} {avg_clat:>10,.0f} "
-              f"{avg_etps:>10,.0f} {avg_elat:>10,.0f}")
+        print(f"{''.join(parts)} {avg_sctps:>10,.0f} {avg_sclat:>10,.0f} "
+              f"{avg_sr:>9.1%} {avg_ctps:>10,.0f} {avg_clat:>10,.0f}")
 
 
 def run_e2e_1():

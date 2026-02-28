@@ -31,6 +31,7 @@ class Settings:
         self.repo_name = repo_name
         self.repo_url = repo_url
         self.branch = branch
+        self.subdir = ''
 
         self.instance_type = instance_type
         self.aws_regions = regions

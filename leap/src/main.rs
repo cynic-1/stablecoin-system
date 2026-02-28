@@ -130,7 +130,7 @@ fn bench_parallel(
         ParallelTransactionExecutor::<StablecoinTx, StablecoinExecutor>::with_config(config.clone());
 
     for run in 0..(num_warmups + num_runs) {
-        let mut txns = gen.generate_with_funding(num_txns, 1_000_000);
+        let mut txns = gen.generate(num_txns);
         if use_cado {
             cado_ordering(&mut txns);
         }
@@ -155,6 +155,7 @@ fn bench_parallel(
         let args = StablecoinExecArgs {
             crypto_work_iters: crypto_iters,
             hot_delta,
+            funded_balance: 1_000_000,
         };
 
         let start = Instant::now();
@@ -184,7 +185,7 @@ fn bench_serial(
     let mut tps_values = Vec::new();
 
     for run in 0..(num_warmups + num_runs) {
-        let txns = gen.generate_with_funding(num_txns, 1_000_000);
+        let txns = gen.generate(num_txns);
         let block_size = txns.len();
         let start = Instant::now();
         let _ = serial_execute(&txns, crypto_iters);

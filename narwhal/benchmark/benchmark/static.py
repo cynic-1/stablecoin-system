@@ -30,13 +30,14 @@ class StaticSettingsError(Exception):
 class StaticSettings:
     """Mimics the Settings interface used by Bench."""
 
-    def __init__(self, key_path, username, base_port, repo_name, repo_url, branch):
+    def __init__(self, key_path, username, base_port, repo_name, repo_url, branch, subdir=''):
         self.key_path = key_path
         self.username = username
         self.base_port = base_port
         self.repo_name = repo_name
         self.repo_url = repo_url
         self.branch = branch
+        self.subdir = subdir
 
     @classmethod
     def load(cls, filename='hosts.json'):
@@ -50,6 +51,7 @@ class StaticSettings:
                 repo_name=data['repo']['name'],
                 repo_url=data['repo']['url'],
                 branch=data['repo']['branch'],
+                subdir=data['repo'].get('subdir', ''),
             )
         except (OSError, JSONDecodeError) as e:
             raise StaticSettingsError(str(e))

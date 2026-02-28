@@ -104,6 +104,7 @@ fn run_engine(
     let args = StablecoinExecArgs {
         crypto_work_iters: 0,
         hot_delta: hot_delta.clone(),
+        funded_balance: 0,
     };
 
     let outputs = executor

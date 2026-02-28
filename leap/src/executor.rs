@@ -112,8 +112,10 @@ where
         let bp = if config.enable_backpressure {
             // Scale window with thread count: threads need enough headroom to
             // stay busy while validation (sequential) catches up.
-            let w_init = std::cmp::max(config.w_initial, num_workers * 8);
-            let w_max = std::cmp::max(config.w_max, num_workers * 32);
+            // Use 16× multiplier for w_init (was 8×) to avoid throttling at
+            // low thread counts under high contention (e.g. 4T H90%).
+            let w_init = std::cmp::max(config.w_initial, num_workers * 16);
+            let w_max = std::cmp::max(config.w_max, num_workers * 64);
             Some(BackpressureController::new(w_init, config.w_min, w_max))
         } else {
             None

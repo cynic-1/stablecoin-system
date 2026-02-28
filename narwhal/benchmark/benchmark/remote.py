@@ -143,6 +143,13 @@ class Bench:
         output = c.run(cmd, hide=True)
         self._check_stderr(output)
 
+    def _remote_workspace(self):
+        """Remote path to the narwhal workspace (accounts for repo subdir)."""
+        subdir = getattr(self.settings, 'subdir', '')
+        if subdir:
+            return f'{self.settings.repo_name}/{subdir}'
+        return self.settings.repo_name
+
     def _update(self, hosts, collocate):
         if collocate:
             ips = list(set(hosts))
@@ -152,14 +159,15 @@ class Bench:
         Print.info(
             f'Updating {len(ips)} machines (branch "{self.settings.branch}")...'
         )
+        workspace = self._remote_workspace()
         cmd = [
             f'(cd {self.settings.repo_name} && git fetch -f)',
             f'(cd {self.settings.repo_name} && git checkout -f {self.settings.branch})',
             f'(cd {self.settings.repo_name} && git pull -f)',
             'source $HOME/.cargo/env',
-            f'(cd {self.settings.repo_name}/node && {CommandMaker.compile(self.extra_features)})',
+            f'(cd {workspace}/node && {CommandMaker.compile(self.extra_features)})',
             CommandMaker.alias_binaries(
-                f'./{self.settings.repo_name}/target/release/'
+                f'./{workspace}/target/release/'
             )
         ]
         g = Group(*ips, user=self._user, connect_kwargs=self.connect)
@@ -172,8 +180,8 @@ class Bench:
         cmd = CommandMaker.cleanup()
         subprocess.run([cmd], shell=True, stderr=subprocess.DEVNULL)
 
-        # Recompile the latest code.
-        cmd = CommandMaker.compile().split()
+        # Recompile the latest code (with extra features if specified).
+        cmd = CommandMaker.compile(self.extra_features).split()
         subprocess.run(cmd, check=True, cwd=PathMaker.node_crate_path())
 
         # Create alias for the client and nodes binary.
@@ -346,6 +354,7 @@ class Bench:
             raise BenchError('Failed to configure nodes', e)
 
         # Run benchmarks.
+        last_logger = None
         for n in bench_parameters.nodes:
             committee_copy = deepcopy(committee)
             committee_copy.remove_nodes(committee.size() - n)
@@ -365,15 +374,18 @@ class Bench:
                         logger = self._logs(committee_copy, faults)
                         logger.print(PathMaker.result_file(
                             faults,
-                            n, 
+                            n,
                             bench_parameters.workers,
                             bench_parameters.collocate,
-                            r, 
-                            bench_parameters.tx_size, 
+                            r,
+                            bench_parameters.tx_size,
                         ))
+                        last_logger = logger
                     except (subprocess.SubprocessError, GroupException, ParseError) as e:
                         self.kill(hosts=selected_hosts)
                         if isinstance(e, GroupException):
                             e = FabricError(e)
                         Print.error(BenchError('Benchmark failed', e))
                         continue
+
+        return last_logger

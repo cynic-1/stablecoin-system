@@ -131,6 +131,9 @@ impl Transaction for StablecoinTx {
 pub struct StablecoinExecArgs {
     pub crypto_work_iters: u32,
     pub hot_delta: Option<Arc<HotDeltaManager>>,
+    /// Default balance for accounts not yet written in this block.
+    /// Simulates pre-existing on-chain state (accounts are already funded).
+    pub funded_balance: u64,
 }
 
 impl From<u32> for StablecoinExecArgs {
@@ -138,6 +141,7 @@ impl From<u32> for StablecoinExecArgs {
         Self {
             crypto_work_iters: iters,
             hot_delta: None,
+            funded_balance: 0,
         }
     }
 }
@@ -145,12 +149,28 @@ impl From<u32> for StablecoinExecArgs {
 pub struct StablecoinExecutor {
     crypto_work_iters: u32,
     hot_delta: Option<Arc<HotDeltaManager>>,
+    funded_balance: u64,
 }
 
 /// Output holding writes.
 #[derive(Debug, Clone)]
 pub struct StablecoinOutput {
     pub writes: Vec<(StateKey, StateValue)>,
+}
+
+/// Execution outcome counts for benchmark metrics.
+#[derive(Debug, Clone, Default)]
+pub struct ExecCounts {
+    pub total: usize,
+    pub successful: usize,
+}
+
+/// Count successful vs failed outcomes from parallel execution outputs.
+/// A transaction is successful if it produced non-empty writes.
+pub fn count_parallel_outcomes(outputs: &[StablecoinOutput]) -> ExecCounts {
+    let total = outputs.len();
+    let successful = outputs.iter().filter(|o| !o.writes.is_empty()).count();
+    ExecCounts { total, successful }
 }
 
 impl TransactionOutput for StablecoinOutput {
@@ -175,6 +195,7 @@ impl ExecutorTask for StablecoinExecutor {
         StablecoinExecutor {
             crypto_work_iters: args.crypto_work_iters,
             hot_delta: args.hot_delta,
+            funded_balance: args.funded_balance,
         }
     }
 
@@ -196,19 +217,20 @@ impl ExecutorTask for StablecoinExecutor {
                 // shards from receiving funds), aggregate deltas into the
                 // balance and reset them. Block-STM's conflict detection
                 // handles concurrent delta writes correctly via re-execution.
+                let fb = self.funded_balance;
                 let (sender_bal, sender_delta_resets) = if let Some(ref mgr) = self.hot_delta {
                     if mgr.is_hot(*sender) {
-                        let aggregated = read_balance_with_deltas(view, *sender, mgr);
+                        let aggregated = read_balance_with_deltas(view, *sender, mgr, fb);
                         let p = mgr.shard_count(*sender);
                         let resets: Vec<(StateKey, StateValue)> = (0..p)
                             .map(|s| (StateKey::Delta(*sender, s as u64), 0))
                             .collect();
                         (aggregated, resets)
                     } else {
-                        (read_u64(view, &StateKey::Balance(*sender)), vec![])
+                        (read_balance(view, *sender, fb), vec![])
                     }
                 } else {
-                    (read_u64(view, &StateKey::Balance(*sender)), vec![])
+                    (read_balance(view, *sender, fb), vec![])
                 };
 
                 if sender_bal < *amount {
@@ -228,7 +250,7 @@ impl ExecutorTask for StablecoinExecutor {
                             (StateKey::Nonce(*sender), sender_nonce + 1),
                         ]
                     } else {
-                        let receiver_bal = read_u64(view, &StateKey::Balance(*receiver));
+                        let receiver_bal = read_balance(view, *receiver, fb);
                         vec![
                             (StateKey::Balance(*sender), sender_bal - amount),
                             (StateKey::Balance(*receiver), receiver_bal + amount),
@@ -236,7 +258,7 @@ impl ExecutorTask for StablecoinExecutor {
                         ]
                     }
                 } else {
-                    let receiver_bal = read_u64(view, &StateKey::Balance(*receiver));
+                    let receiver_bal = read_balance(view, *receiver, fb);
                     vec![
                         (StateKey::Balance(*sender), sender_bal - amount),
                         (StateKey::Balance(*receiver), receiver_bal + amount),
@@ -263,7 +285,7 @@ impl ExecutorTask for StablecoinExecutor {
                             (StateKey::Nonce(0), minter_nonce + 1),
                         ]
                     } else {
-                        let bal = read_u64(view, &StateKey::Balance(*to));
+                        let bal = read_balance(view, *to, self.funded_balance);
                         vec![
                             (StateKey::Balance(*to), bal + amount),
                             (StateKey::TotalSupply, supply + amount),
@@ -271,7 +293,7 @@ impl ExecutorTask for StablecoinExecutor {
                         ]
                     }
                 } else {
-                    let bal = read_u64(view, &StateKey::Balance(*to));
+                    let bal = read_balance(view, *to, self.funded_balance);
                     vec![
                         (StateKey::Balance(*to), bal + amount),
                         (StateKey::TotalSupply, supply + amount),
@@ -283,9 +305,9 @@ impl ExecutorTask for StablecoinExecutor {
             StablecoinTxType::Burn { from, amount } => {
                 // For Burn, read the full balance (including delta aggregation if hot).
                 let bal = if let Some(ref mgr) = self.hot_delta {
-                    read_balance_with_deltas(view, *from, mgr)
+                    read_balance_with_deltas(view, *from, mgr, self.funded_balance)
                 } else {
-                    read_u64(view, &StateKey::Balance(*from))
+                    read_balance(view, *from, self.funded_balance)
                 };
                 if bal < *amount {
                     return ExecutionStatus::Success(StablecoinOutput { writes: vec![] });
@@ -338,13 +360,25 @@ fn read_u64(view: &MVHashMapView<StateKey, StateValue>, key: &StateKey) -> u64 {
     }
 }
 
+/// Read a Balance key, returning `funded_balance` if never written in this block.
+/// Ok(None) = key never written → pre-existing funded account.
+/// Ok(Some(0)) = explicitly written 0 → drained account.
+fn read_balance(view: &MVHashMapView<StateKey, StateValue>, account: u64, funded_balance: u64) -> u64 {
+    match view.read(&StateKey::Balance(account)) {
+        Ok(Some(v)) => *v,
+        Ok(None) => funded_balance,
+        Err(_) => funded_balance,
+    }
+}
+
 /// Read the full balance of an account, aggregating delta shards if hot.
 fn read_balance_with_deltas(
     view: &MVHashMapView<StateKey, StateValue>,
     account: u64,
     mgr: &HotDeltaManager,
+    funded_balance: u64,
 ) -> u64 {
-    let base = read_u64(view, &StateKey::Balance(account));
+    let base = read_balance(view, account, funded_balance);
     if !mgr.is_hot(account) {
         return base;
     }
@@ -507,6 +541,10 @@ impl StablecoinWorkloadGenerator {
 
 /// Execute transactions sequentially, returning final state.
 pub fn serial_execute(txns: &[StablecoinTx], crypto_work_iters: u32) -> std::collections::HashMap<StateKey, StateValue> {
+    serial_execute_with_balance(txns, crypto_work_iters, 0)
+}
+
+pub fn serial_execute_with_balance(txns: &[StablecoinTx], crypto_work_iters: u32, funded_balance: u64) -> std::collections::HashMap<StateKey, StateValue> {
     let mut state = std::collections::HashMap::new();
 
     for txn in txns {
@@ -519,9 +557,9 @@ pub fn serial_execute(txns: &[StablecoinTx], crypto_work_iters: u32) -> std::col
                 receiver,
                 amount,
             } => {
-                let sender_bal = *state.get(&StateKey::Balance(*sender)).unwrap_or(&0);
+                let sender_bal = *state.get(&StateKey::Balance(*sender)).unwrap_or(&funded_balance);
                 if sender_bal >= *amount {
-                    let receiver_bal = *state.get(&StateKey::Balance(*receiver)).unwrap_or(&0);
+                    let receiver_bal = *state.get(&StateKey::Balance(*receiver)).unwrap_or(&funded_balance);
                     let sender_nonce = *state.get(&StateKey::Nonce(*sender)).unwrap_or(&0);
                     state.insert(StateKey::Balance(*sender), sender_bal - amount);
                     state.insert(StateKey::Balance(*receiver), receiver_bal + amount);
@@ -529,7 +567,7 @@ pub fn serial_execute(txns: &[StablecoinTx], crypto_work_iters: u32) -> std::col
                 }
             }
             StablecoinTxType::Mint { to, amount } => {
-                let bal = *state.get(&StateKey::Balance(*to)).unwrap_or(&0);
+                let bal = *state.get(&StateKey::Balance(*to)).unwrap_or(&funded_balance);
                 let supply = *state.get(&StateKey::TotalSupply).unwrap_or(&0);
                 let nonce = *state.get(&StateKey::Nonce(0)).unwrap_or(&0);
                 state.insert(StateKey::Balance(*to), bal + amount);
@@ -537,7 +575,7 @@ pub fn serial_execute(txns: &[StablecoinTx], crypto_work_iters: u32) -> std::col
                 state.insert(StateKey::Nonce(0), nonce + 1);
             }
             StablecoinTxType::Burn { from, amount } => {
-                let bal = *state.get(&StateKey::Balance(*from)).unwrap_or(&0);
+                let bal = *state.get(&StateKey::Balance(*from)).unwrap_or(&funded_balance);
                 if bal >= *amount {
                     let supply = *state.get(&StateKey::TotalSupply).unwrap_or(&0);
                     let nonce = *state.get(&StateKey::Nonce(0)).unwrap_or(&0);
@@ -552,6 +590,63 @@ pub fn serial_execute(txns: &[StablecoinTx], crypto_work_iters: u32) -> std::col
         }
     }
     state
+}
+
+/// Execute transactions sequentially with success counting.
+/// Same logic as serial_execute but also returns ExecCounts.
+pub fn serial_execute_counted(txns: &[StablecoinTx], crypto_work_iters: u32, funded_balance: u64) -> (std::collections::HashMap<StateKey, StateValue>, ExecCounts) {
+    let mut state = std::collections::HashMap::new();
+    let mut counts = ExecCounts { total: txns.len(), successful: 0 };
+
+    for txn in txns {
+        let _work = simulate_tx_crypto_work(txn.tx_hash, crypto_work_iters);
+
+        let success = match &txn.tx_type {
+            StablecoinTxType::Transfer { sender, receiver, amount } => {
+                let sender_bal = *state.get(&StateKey::Balance(*sender)).unwrap_or(&funded_balance);
+                if sender_bal >= *amount {
+                    let receiver_bal = *state.get(&StateKey::Balance(*receiver)).unwrap_or(&funded_balance);
+                    let sender_nonce = *state.get(&StateKey::Nonce(*sender)).unwrap_or(&0);
+                    state.insert(StateKey::Balance(*sender), sender_bal - amount);
+                    state.insert(StateKey::Balance(*receiver), receiver_bal + amount);
+                    state.insert(StateKey::Nonce(*sender), sender_nonce + 1);
+                    true
+                } else {
+                    false
+                }
+            }
+            StablecoinTxType::Mint { to, amount } => {
+                let bal = *state.get(&StateKey::Balance(*to)).unwrap_or(&funded_balance);
+                let supply = *state.get(&StateKey::TotalSupply).unwrap_or(&0);
+                let nonce = *state.get(&StateKey::Nonce(0)).unwrap_or(&0);
+                state.insert(StateKey::Balance(*to), bal + amount);
+                state.insert(StateKey::TotalSupply, supply + amount);
+                state.insert(StateKey::Nonce(0), nonce + 1);
+                true
+            }
+            StablecoinTxType::Burn { from, amount } => {
+                let bal = *state.get(&StateKey::Balance(*from)).unwrap_or(&funded_balance);
+                if bal >= *amount {
+                    let supply = *state.get(&StateKey::TotalSupply).unwrap_or(&0);
+                    let nonce = *state.get(&StateKey::Nonce(0)).unwrap_or(&0);
+                    state.insert(StateKey::Balance(*from), bal - amount);
+                    state.insert(StateKey::TotalSupply, supply - amount);
+                    state.insert(StateKey::Nonce(0), nonce + 1);
+                    true
+                } else {
+                    false
+                }
+            }
+            StablecoinTxType::InitBalance { account, amount } => {
+                state.insert(StateKey::Balance(*account), *amount);
+                true
+            }
+        };
+        if success {
+            counts.successful += 1;
+        }
+    }
+    (state, counts)
 }
 
 /// Execute transactions in parallel via LEAP and extract final state from outputs.
@@ -574,6 +669,7 @@ pub fn parallel_execute_to_state(
     let args = StablecoinExecArgs {
         crypto_work_iters,
         hot_delta: None,
+        funded_balance: 0,
     };
 
     let executor =
@@ -613,6 +709,7 @@ pub fn parallel_execute_to_state_with_hot_delta(
     let args = StablecoinExecArgs {
         crypto_work_iters,
         hot_delta: Some(hot_delta.clone()),
+        funded_balance: 0,
     };
 
     let executor =

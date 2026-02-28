@@ -44,10 +44,21 @@ class LogParser:
                 results = p.map(self._parse_primaries, primaries)
         except (ValueError, IndexError, AttributeError) as e:
             raise ParseError(f'Failed to parse nodes\' logs: {e}')
-        proposals, commits, executions, self.configs, primary_ips = zip(*results)
+        proposals, commits, executions, exec_counts_list, self.configs, primary_ips \
+            = zip(*results)
         self.proposals = self._merge_results([x.items() for x in proposals])
         self.commits = self._merge_results([x.items() for x in commits])
         self.executions = self._merge_results([x.items() for x in executions])
+
+        # Aggregate ExecStats counts across all primaries.
+        # In state machine replication every non-faulty node executes the
+        # same committed certificates, so per-node count = system throughput.
+        n_nodes = (self.committee_size - self.faults) \
+            if isinstance(self.faults, int) else 1
+        n_nodes = max(1, n_nodes)
+        self.total_txns = sum(c['total'] for c in exec_counts_list) // n_nodes
+        self.total_ok = sum(c['ok'] for c in exec_counts_list) // n_nodes
+        self.total_fail = sum(c['fail'] for c in exec_counts_list) // n_nodes
 
         # Parse the workers logs.
         try:
@@ -112,6 +123,14 @@ class LogParser:
         tmp = [(d, self._to_posix(t)) for t, d in tmp]
         executions = self._merge_results([tmp])
 
+        # Parse ExecStats lines for transaction success/failure counts.
+        exec_counts = {'total': 0, 'ok': 0, 'fail': 0}
+        tmp = findall(r'ExecStats B\d+ total=(\d+) ok=(\d+) fail=(\d+)', log)
+        for total, ok, fail in tmp:
+            exec_counts['total'] += int(total)
+            exec_counts['ok'] += int(ok)
+            exec_counts['fail'] += int(fail)
+
         configs = {
             'header_size': int(
                 search(r'Header size .* (\d+)', log).group(1)
@@ -138,7 +157,7 @@ class LogParser:
 
         ip = search(r'booted on (\d+.\d+.\d+.\d+)', log).group(1)
 
-        return proposals, commits, executions, configs, ip
+        return proposals, commits, executions, exec_counts, configs, ip
 
     def _parse_workers(self, log):
         if search(r'(?:panic|Error)', log) is not None:
@@ -215,6 +234,36 @@ class LogParser:
                     latency += [end-start]
         return mean(latency) if latency else 0
 
+    def _stablecoin_tps(self):
+        """TPS = total successful txns / (last execution time - first client send)."""
+        if not self.executions or self.total_ok == 0:
+            return 0, 0
+        start = min(self.start)
+        end = max(self.executions.values())
+        duration = end - start
+        if duration <= 0:
+            return 0, 0
+        tps = self.total_ok / duration
+        return tps, duration
+
+    def _stablecoin_latency(self):
+        """Per-sample-tx latency: execution complete time - client send time."""
+        latency = []
+        for sent, received in zip(self.sent_samples, self.received_samples):
+            for tx_id, batch_id in received.items():
+                if batch_id in self.executions:
+                    if tx_id in sent:
+                        start = sent[tx_id]
+                        end = self.executions[batch_id]
+                        latency += [end - start]
+        return mean(latency) if latency else 0
+
+    def _success_rate(self):
+        """Success rate = successful txns / total txns."""
+        if self.total_txns == 0:
+            return 0
+        return self.total_ok / self.total_txns
+
     def result(self):
         header_size = self.configs[0]['header_size']
         max_header_delay = self.configs[0]['max_header_delay']
@@ -231,6 +280,10 @@ class LogParser:
 
         with_exec_tps, with_exec_bps, _ = self._with_exec_throughput()
         with_exec_latency = self._with_exec_latency() * 1_000
+
+        stablecoin_tps, sc_duration = self._stablecoin_tps()
+        stablecoin_latency = self._stablecoin_latency() * 1_000
+        success_rate = self._success_rate()
 
         result = (
             '\n'
@@ -270,6 +323,17 @@ class LogParser:
                 f' With-execution TPS: {round(with_exec_tps):,} tx/s\n'
                 f' With-execution BPS: {round(with_exec_bps):,} B/s\n'
                 f' With-execution latency: {round(with_exec_latency):,} ms\n'
+            )
+
+        if self.total_txns > 0:
+            result += (
+                '\n'
+                ' + STABLECOIN METRICS:\n'
+                f' Stablecoin TPS: {round(stablecoin_tps):,} tx/s\n'
+                f' Stablecoin latency: {round(stablecoin_latency):,} ms\n'
+                f' Success rate: {success_rate:.4f}\n'
+                f' Total transactions: {self.total_txns:,}\n'
+                f' Successful transactions: {self.total_ok:,}\n'
             )
 
         result += '-----------------------------------------\n'

@@ -250,6 +250,7 @@ fn test_domain_aware_correctness() {
     let args = StablecoinExecArgs {
         crypto_work_iters: 0,
         hot_delta: None,
+        funded_balance: 0,
     };
 
     let mut executor =
@@ -316,6 +317,7 @@ fn test_all_optimizations_combined() {
     let args = StablecoinExecArgs {
         crypto_work_iters: 0,
         hot_delta: Some(mgr.clone()),
+        funded_balance: 0,
     };
 
     let mut executor =
@@ -441,6 +443,7 @@ fn check_funded_serial_equivalence(config: LeapConfig, use_cado: bool, use_hot_d
     let args = StablecoinExecArgs {
         crypto_work_iters: 0,
         hot_delta: hot_delta.clone(),
+        funded_balance: 0,
     };
 
     let mut executor =
