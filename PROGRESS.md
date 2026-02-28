@@ -20,6 +20,21 @@
   - 4T: LEAP 31K vs LB 45K (-29%), CPU 过度订阅 (4×4=16 线程, 8 核)
   - 8T: LEAP 17K vs LB 12K (+41%), 极端过度订阅下 LEAP 冲突减少更有价值
   - 结论：localhost 上 4 节点只能使用 2T/node；LEAP 执行优势需 8+ 线程，无法在 localhost E2E 中展示
+- **分布式部署基础设施** (2026-02-28): 将 Exp2/Exp3 迁移到真实多服务器部署。修复 8 个 bug（SSH 密钥、路径、fd 泄漏、编译失败静默吞掉等）。脚本：`run_distributed_exp2.py`、`run_distributed_exp3.py`。
+- **分布式部署修复周期** (2026-02-28): 发现并修复分布式实验中的 4 个关键问题:
+  1. **编译期 feature flag bug**: `#[cfg(feature = "mp3bft")]` 是编译期检查，分布式脚本用超集 features 编译一个二进制，导致 "Tusk" 实际运行 MP3-BFT++ k=4。修复：运行时 `CONSENSUS_PROTOCOL` 环境变量选择共识协议。
+  2. **PathMaker 相对路径**: 脚本从非 benchmark 目录运行时报 `FileNotFoundError: ../node`。修复：所有分布式脚本添加 `os.chdir()`。
+  3. **5MB batch_size 灾难**: 尝试增大 batch_size 以增加每 certificate 交易数（~9766），但 CADO 将热点交易集中成超长热块，导致 Block-STM 级联 abort，执行率仅 19%（505K/2.6M）。已回滚到 500KB。
+  4. **随机交易序列导致巨大方差**: 同一配置下 run1 LEAP +24%、run2 BlockSTM +104%。修复：`LEAP_SEED` 环境变量 + `generate_seeded(n, seed+cert_counter)` 确保相同 certificate 序号生成相同交易。
+  - 其他改进：系统交替运行（MP3+LEAP → Tusk+BlockSTM）方便快速对比、新增 committed/executed/exec_ratio 指标、精简 CSV 字段。
+- **E2E 专用执行线程优化** (2026-02-28): `analyze()` 从 tokio async task + `spawn_blocking` 改为专用 OS 线程 + `blocking_recv()`。消除每个 certificate 的 `spawn_blocking` 调度开销（~50ms tokio 事件循环上下文切换）。主要变更：
+  1. `analyze()` 从 `async fn` 改为 `fn`，`rx_output.recv().await` → `rx_output.blocking_recv()`
+  2. 移除 `tokio::task::spawn_blocking` 封装，执行逻辑直接内联运行
+  3. `Arc<Mutex<ParallelTransactionExecutor>>` 简化为普通局部变量（单线程独占，无需同步）
+  4. `run()` 调用点用 `std::thread::Builder::new().spawn()` + `std::future::pending()` 保持 tokio 运行时存活
+  5. `catch_unwind(AssertUnwindSafe(...))` 替代 `JoinError` 处理，防止 rayon panic 杀死线程
+  - 文件：`narwhal/node/src/main.rs`（唯一修改文件）
+  - 预期效果：exec_ratio 从 ~0.16 提升至接近 1.0（消除 tokio 调度瓶颈）
 - Reports: `experiments/exp1_execution/REPORT.md`, `experiments/exp2_consensus/REPORT.md`, `experiments/exp3_e2e/REPORT.md`
 - Cross-reference: `summary.md` (English), `summary_zh.md` (Chinese)
 
@@ -720,6 +735,53 @@ python3 narwhal/benchmark/run_e2e_complete.py
 | Headline: H90%@200K TPS diff | +15.4% (with-exec) | **-13.7%** (stablecoin, LEAP 开销在 2 线程/节点下) |
 
 v8 揭示了更真实的性能画面：（1）共识延迟优势来自 MP3-BFT++（一致且显著，25-38%）；（2）TPS 优势仅在饱和拐点处出现（150K: +6-7%），深度饱和时受 2 线程/节点限制反转；（3）成功率和真实交易吞吐提供了之前缺失的应用层视角。生产部署中每节点 16+ 执行线程将恢复 Exp-1 中观察到的 LEAP TPS 优势。
+
+## Distributed Deployment Fixes (2026-02-28)
+
+将 Exp2（共识层）和 Exp3（E2E）从 localhost 模拟迁移到真实多服务器分布式部署。通过 `run_distributed.sh` 驱动，使用 `hosts.json` 配置远程服务器。迭代调试过程中发现并修复了 8 个 bug。
+
+### 脚本架构
+
+```
+narwhal/benchmark/
+├── run_distributed.sh           # 入口：依次运行 exp2 和 exp3
+├── run_distributed_exp2.py      # 分布式 Exp2: Tusk vs MP3-BFT++
+├── run_distributed_exp3.py      # 分布式 Exp3: E2E pipeline
+├── hosts.json                   # 服务器 IP、SSH 密钥、仓库路径（gitignored）
+└── benchmark/
+    ├── static.py                # StaticBench/StaticInstanceManager（替代 AWS InstanceManager）
+    ├── remote.py                # Bench 核心：SSH 到远程服务器编译/部署/运行/收集日志
+    └── commands.py              # 命令构建器
+```
+
+### Bug 修复记录
+
+| # | 严重性 | Bug | 修复 | 提交 |
+|---|--------|-----|------|------|
+| 21 | MAJOR | **SSH 密钥类型不兼容**：`paramiko.RSAKey` 无法加载 Ed25519 密钥，远程服务器使用 Ed25519 | 新增 `load_pkey()` 自动尝试 Ed25519 → RSA → ECDSA | `0134def` |
+| 22 | MAJOR | **仓库子目录路径错误**：`remote.py` 假设仓库根目录=narwhal 根目录，但实际仓库是 `stablecoin-system/narwhal/` | `StaticSettings` 新增 `subdir` 字段，`_remote_workspace()` 方法拼接正确路径 | `fcafd62` |
+| 23 | MAJOR | **`Bench.run()` 无返回值**：方法无 `return` 语句，分布式脚本调用 `result.result()` 时 NoneType 崩溃 | 添加 `return last_logger` | `fcafd62` |
+| 24 | MODERATE | **编译失败被静默吞掉**：`alias_binaries()` 用 `;` 连接命令，编译失败后仍创建悬空符号链接 → `./benchmark_client: No such file or directory` | 改为 `&&` 连接；`_update()` 改 `hide=False` 暴露编译输出 | `7033d22` |
+| 25 | MODERATE | **每次 run 重复 git pull + 编译**：每个 `run_single()` 创建新 `StaticBench` → `_update()` → 60 次远程编译 | `Bench.run()` 新增 `skip_update` 参数，脚本启动时一次性 `bench.update()`，后续所有 run 跳过 | `e1b41ad` |
+| 26 | CRITICAL | **文件描述符泄漏**（两层）：(1) 每次 `run_single()` 创建新 `StaticBench`（新 SSH 连接池）从不释放；(2) `remote.py` 内部每个 `Connection`/`Group` 使用后不调用 `.close()` | (1) 复用单个 `StaticBench`，通过 `env_vars` 参数切换协议；(2) 所有 `Connection.close()` / `Group.close()` | `4b103e2` + `ea11daa` |
+| 27 | MINOR | **`Bench.run()` 返回 None 未处理**：benchmark 失败时 `result.result()` AttributeError | 分布式脚本添加 `if result is None: return {'status': 'error'}` | `90debb3` |
+| 28 | MINOR | **本地编译缺少 extra_features**：`_config()` 中 `CommandMaker.compile()` 未传递 `self.extra_features` | 传递 `self.extra_features` | `fcafd62` |
+
+### 关键设计决策
+
+1. **单 Bench 实例复用**：每次创建 `StaticBench` 都建立到所有远程服务器的 SSH 连接池。原始设计每次 `run_single()` 创建新实例（60 次 run = 60 个连接池 × 4 服务器 = 240+ 未关闭的 SSH 连接），超过系统 `ulimit -n`（通常 1024）。修复后全局复用一个实例，通过 `bench.run(env_vars=...)` 切换环境变量（协议选择、线程数等）。
+2. **特性超集编译**：远程服务器只编译一次，使用所有特性的超集（`benchmark,mp3bft` 或 `benchmark,e2e_exec,mp3bft`）。协议选择在运行时通过环境变量（`MP3BFT_K_SLOTS`、`LEAP_ENGINE`）完成，无需重新编译。
+3. **`hosts.json` 的 `subdir` 字段**：当仓库结构是 `repo/narwhal/` 而非 `repo/`（直接是 narwhal）时，需要在 hosts.json 中指定 `"subdir": "narwhal"` 以构建正确的远程路径。
+
+### 提交记录
+- `45244cb` — feat: add distributed deployment support for static servers
+- `fcafd62` — fix: funded_balance, CADO baseline, BP window, distributed deployment
+- `0134def` — fix(benchmark): auto-detect SSH key type (Ed25519/RSA/ECDSA)
+- `90debb3` — fix(benchmark): handle None return from Bench.run()
+- `7033d22` — fix(benchmark): expose remote compilation failures
+- `e1b41ad` — perf(benchmark): update remote servers once instead of per-run
+- `4b103e2` — fix(benchmark): reuse single StaticBench to prevent fd leak
+- `ea11daa` — fix(benchmark): close SSH connections after use to prevent fd exhaustion
 
 ## Issues and Solutions
 1. Block-STM's real benchmark depends on the full Diem VM (137-crate workspace). Solution: forked only mvhashmap + parallel-executor core, built standalone with stablecoin-specific benchmark.

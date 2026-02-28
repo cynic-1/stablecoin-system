@@ -171,8 +171,15 @@ async fn run(matches: &ArgMatches<'_>) -> Result<()> {
         _ => unreachable!(),
     }
 
-    // Analyze the consensus' output.
-    analyze(rx_output, batch_size).await;
+    // Analyze the consensus' output on a dedicated OS thread.
+    // This avoids tokio spawn_blocking overhead per certificate.
+    std::thread::Builder::new()
+        .name("leap-executor".to_string())
+        .spawn(move || analyze(rx_output, batch_size))
+        .expect("Failed to spawn executor thread");
+
+    // Keep the tokio runtime alive (process runs until killed externally).
+    std::future::pending::<()>().await;
 
     // If this expression is reached, the program ends and all other tasks terminate.
     unreachable!();
@@ -180,15 +187,16 @@ async fn run(matches: &ArgMatches<'_>) -> Result<()> {
 
 /// Receives an ordered list of certificates and apply any application-specific logic.
 #[cfg(not(feature = "e2e_exec"))]
-async fn analyze(mut rx_output: Receiver<Certificate>, _batch_size: usize) {
-    while let Some(_certificate) = rx_output.recv().await {
+fn analyze(mut rx_output: Receiver<Certificate>, _batch_size: usize) {
+    while let Some(_certificate) = rx_output.blocking_recv() {
         // NOTE: Here goes the application logic.
     }
 }
 
 /// With e2e_exec: receives committed certificates and executes stablecoin txns via LEAP.
+/// Runs on a dedicated OS thread (not tokio) to avoid spawn_blocking overhead per certificate.
 #[cfg(feature = "e2e_exec")]
-async fn analyze(mut rx_output: Receiver<Certificate>, batch_size: usize) {
+fn analyze(mut rx_output: Receiver<Certificate>, batch_size: usize) {
     use leap::cado::cado_ordering;
     use leap::config::LeapConfig;
     use leap::domain_plan::build_domain_plan;
@@ -288,15 +296,13 @@ async fn analyze(mut rx_output: Receiver<Certificate>, batch_size: usize) {
         _ => None,
     };
 
-    let shared_executor: Option<
-        Arc<std::sync::Mutex<ParallelTransactionExecutor<StablecoinTx, StablecoinExecutor>>>,
-    > = leap_config.as_ref().map(|config| {
-        Arc::new(std::sync::Mutex::new(
-            ParallelTransactionExecutor::with_config(config.clone()),
-        ))
-    });
+    // No Arc<Mutex<>> needed — executor lives on this dedicated thread only.
+    let mut executor: Option<ParallelTransactionExecutor<StablecoinTx, StablecoinExecutor>> =
+        leap_config.as_ref().map(|config| {
+            ParallelTransactionExecutor::with_config(config.clone())
+        });
 
-    while let Some(certificate) = rx_output.recv().await {
+    while let Some(certificate) = rx_output.blocking_recv() {
         let num_batches = certificate.header.payload.len();
         let num_txns = num_batches * batch_size / tx_size;
         if num_txns == 0 {
@@ -315,21 +321,16 @@ async fn analyze(mut rx_output: Receiver<Certificate>, batch_size: usize) {
             None => generator.generate(num_txns),
         };
 
-        let engine_clone = engine.clone();
-        let executor_clone = shared_executor.clone();
-        let config_clone = leap_config.clone();
         let exec_start = Instant::now();
 
-        // Run execution on a blocking thread (LEAP uses rayon internally).
-        // Returns ExecCounts for success/failure tracking.
-        let exec_result = tokio::task::spawn_blocking(move || -> ExecCounts {
-            match engine_clone.as_str() {
+        // Execute directly on this thread (no spawn_blocking overhead).
+        // Wrap in catch_unwind to prevent a rayon panic from killing the thread.
+        let exec_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> ExecCounts {
+            match engine.as_str() {
                 "leap" => {
                     cado_ordering(&mut txns);
-                    let config = config_clone.unwrap();
-                    let executor_arc = executor_clone.unwrap();
-                    let mut executor = executor_arc.lock()
-                        .unwrap_or_else(|e| e.into_inner());
+                    let config = leap_config.as_ref().unwrap();
+                    let exec = executor.as_mut().unwrap();
 
                     // Hot-Delta: detect hotspots.
                     let mut mgr = HotDeltaManager::new(
@@ -349,8 +350,8 @@ async fn analyze(mut rx_output: Receiver<Certificate>, batch_size: usize) {
                         funded_balance: 1_000_000,
                     };
 
-                    executor.set_segment_bounds(bounds, plan.txn_to_segment(num_txns_total));
-                    match executor.execute_transactions_parallel(args, txns) {
+                    exec.set_segment_bounds(bounds, plan.txn_to_segment(num_txns_total));
+                    match exec.execute_transactions_parallel(args, txns) {
                         Ok(outputs) => count_parallel_outcomes(&outputs),
                         Err(_) => ExecCounts::default(),
                     }
@@ -358,15 +359,13 @@ async fn analyze(mut rx_output: Receiver<Certificate>, batch_size: usize) {
                 "leap_base" => {
                     // No CADO ordering: baseline uses random transaction order,
                     // matching Exp-1 where LEAP-base has use_cado=false.
-                    let executor_arc = executor_clone.unwrap();
-                    let executor = executor_arc.lock()
-                        .unwrap_or_else(|e| e.into_inner());
+                    let exec = executor.as_mut().unwrap();
                     let args = StablecoinExecArgs {
                         crypto_work_iters: crypto_iters,
                         hot_delta: None,
                         funded_balance: 1_000_000,
                     };
-                    match executor.execute_transactions_parallel(args, txns) {
+                    match exec.execute_transactions_parallel(args, txns) {
                         Ok(outputs) => count_parallel_outcomes(&outputs),
                         Err(_) => ExecCounts::default(),
                     }
@@ -377,14 +376,13 @@ async fn analyze(mut rx_output: Receiver<Certificate>, batch_size: usize) {
                     counts
                 }
             }
-        })
-        .await;
+        }));
 
         let exec_ms = exec_start.elapsed().as_millis();
 
         match exec_result {
-            Err(e) => {
-                info!("Execution error B{}({}) : {}", round, num_txns, e);
+            Err(_) => {
+                info!("Execution error B{}({}) : panic in executor", round, num_txns);
                 continue;
             }
             Ok(counts) => {
