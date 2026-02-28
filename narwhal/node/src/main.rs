@@ -328,7 +328,8 @@ async fn analyze(mut rx_output: Receiver<Certificate>, batch_size: usize) {
                     cado_ordering(&mut txns);
                     let config = config_clone.unwrap();
                     let executor_arc = executor_clone.unwrap();
-                    let mut executor = executor_arc.lock().unwrap();
+                    let mut executor = executor_arc.lock()
+                        .unwrap_or_else(|e| e.into_inner());
 
                     // Hot-Delta: detect hotspots.
                     let mut mgr = HotDeltaManager::new(
@@ -358,7 +359,8 @@ async fn analyze(mut rx_output: Receiver<Certificate>, batch_size: usize) {
                     // No CADO ordering: baseline uses random transaction order,
                     // matching Exp-1 where LEAP-base has use_cado=false.
                     let executor_arc = executor_clone.unwrap();
-                    let executor = executor_arc.lock().unwrap();
+                    let executor = executor_arc.lock()
+                        .unwrap_or_else(|e| e.into_inner());
                     let args = StablecoinExecArgs {
                         crypto_work_iters: crypto_iters,
                         hot_delta: None,
