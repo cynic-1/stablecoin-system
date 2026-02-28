@@ -66,7 +66,7 @@ SYSTEM_MP3_LEAP = (
      'LEAP_CRYPTO_US': '10', 'LEAP_ACCOUNTS': '1000'},
 )
 SYSTEM_TUSK_LEAPBASE = (
-    'Tusk+LeapBase',
+    'Tusk+BlockSTM',
     {'CONSENSUS_PROTOCOL': 'tusk', 'LEAP_ENGINE': 'leap_base',
      'LEAP_CRYPTO_US': '10', 'LEAP_ACCOUNTS': '1000'},
 )
@@ -229,14 +229,16 @@ def print_summary(results, group_keys):
 def run_exp(bench, tag, systems, nodes_list, workers, rates, patterns, runs, leap_threads):
     total = len(systems) * len(nodes_list) * len(rates) * len(patterns) * runs
     done, results = 0, []
-    for sys_name, env_base in systems:
-        for nodes in nodes_list:
-            for pattern in patterns:
-                for rate in rates:
-                    env = dict(env_base)
-                    if pattern != 'Uniform':
-                        env['LEAP_PATTERN'] = pattern
-                    for run_id in range(1, runs + 1):
+    # Systems in innermost loop: each config runs MP3+LEAP then Tusk+BlockSTM
+    # back-to-back, so you can compare immediately and Ctrl-C early.
+    for nodes in nodes_list:
+        for pattern in patterns:
+            for rate in rates:
+                for run_id in range(1, runs + 1):
+                    for sys_name, env_base in systems:
+                        env = dict(env_base)
+                        if pattern != 'Uniform':
+                            env['LEAP_PATTERN'] = pattern
                         done += 1
                         print(f"\n[{tag}: {done}/{total}] ", end='')
                         if len(patterns) > 1 and len(rates) > 1:
