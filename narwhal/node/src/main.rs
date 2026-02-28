@@ -4,7 +4,6 @@ use clap::{crate_name, crate_version, App, AppSettings, ArgMatches, SubCommand};
 use config::Export as _;
 use config::Import as _;
 use config::{Committee, KeyPair, Parameters, WorkerId};
-#[cfg(not(feature = "mp3bft"))]
 use consensus::Consensus;
 #[cfg(feature = "mp3bft")]
 use consensus::MP3Consensus;
@@ -116,23 +115,39 @@ async fn run(matches: &ArgMatches<'_>) -> Result<()> {
                 /* tx_consensus */ tx_new_certificates,
                 /* rx_consensus */ rx_feedback,
             );
-            // MP3-BFT++ consensus: multi-slot ordering with 3-chain commit rule.
-            // Tusk consensus: single-leader DAG ordering (default).
+            // Consensus selection: runtime via CONSENSUS_PROTOCOL env var when
+            // compiled with mp3bft feature. This allows a single binary to run
+            // either Tusk or MP3-BFT++ in distributed deployments.
             #[cfg(feature = "mp3bft")]
             {
-                let k_slots: usize = std::env::var("MP3BFT_K_SLOTS")
-                    .ok()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(4);
-                info!("Using MP3-BFT++ consensus with k={} slots", k_slots);
-                MP3Consensus::spawn(
-                    committee,
-                    parameters.gc_depth,
-                    k_slots,
-                    /* rx_primary */ rx_new_certificates,
-                    /* tx_primary */ tx_feedback,
-                    tx_output,
-                );
+                let use_tusk = std::env::var("CONSENSUS_PROTOCOL")
+                    .map(|v| v.eq_ignore_ascii_case("tusk"))
+                    .unwrap_or(false);
+
+                if use_tusk {
+                    info!("Using Tusk consensus (CONSENSUS_PROTOCOL=tusk)");
+                    Consensus::spawn(
+                        committee,
+                        parameters.gc_depth,
+                        /* rx_primary */ rx_new_certificates,
+                        /* tx_primary */ tx_feedback,
+                        tx_output,
+                    );
+                } else {
+                    let k_slots: usize = std::env::var("MP3BFT_K_SLOTS")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(4);
+                    info!("Using MP3-BFT++ consensus with k={} slots", k_slots);
+                    MP3Consensus::spawn(
+                        committee,
+                        parameters.gc_depth,
+                        k_slots,
+                        /* rx_primary */ rx_new_certificates,
+                        /* tx_primary */ tx_feedback,
+                        tx_output,
+                    );
+                }
             }
             #[cfg(not(feature = "mp3bft"))]
             Consensus::spawn(

@@ -55,14 +55,14 @@ NODE_PARAMS = {
 }
 
 PROTOCOLS_ALL = [
-    ('Tusk',          {}),
+    ('Tusk',          {'CONSENSUS_PROTOCOL': 'tusk'}),
     ('MP3-BFT++_k1', {'MP3BFT_K_SLOTS': '1'}),
     ('MP3-BFT++_k2', {'MP3BFT_K_SLOTS': '2'}),
     ('MP3-BFT++_k4', {'MP3BFT_K_SLOTS': '4'}),
 ]
 
 PROTOCOLS_SCALING = [
-    ('Tusk',          {}),
+    ('Tusk',          {'CONSENSUS_PROTOCOL': 'tusk'}),
     ('MP3-BFT++_k4', {'MP3BFT_K_SLOTS': '4'}),
 ]
 

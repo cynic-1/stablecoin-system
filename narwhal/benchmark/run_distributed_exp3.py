@@ -65,12 +65,12 @@ SYSTEM_MP3_LEAP = (
 )
 SYSTEM_TUSK_LEAPBASE = (
     'Tusk+LeapBase',
-    {'LEAP_ENGINE': 'leap_base',
+    {'CONSENSUS_PROTOCOL': 'tusk', 'LEAP_ENGINE': 'leap_base',
      'LEAP_CRYPTO_US': '10', 'LEAP_ACCOUNTS': '1000'},
 )
 SYSTEM_TUSK_SERIAL = (
     'Tusk+Serial',
-    {'LEAP_ENGINE': 'serial', 'LEAP_THREADS': '1',
+    {'CONSENSUS_PROTOCOL': 'tusk', 'LEAP_ENGINE': 'serial', 'LEAP_THREADS': '1',
      'LEAP_CRYPTO_US': '10', 'LEAP_ACCOUNTS': '1000'},
 )
 
