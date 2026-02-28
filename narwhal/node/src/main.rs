@@ -262,9 +262,17 @@ async fn analyze(mut rx_output: Receiver<Certificate>, batch_size: usize) {
 
     let generator = StablecoinWorkloadGenerator::new(num_accounts, hotspot);
 
+    // Fixed seed for deterministic transaction generation across runs.
+    // Same seed + same certificate index = identical transactions,
+    // ensuring fair A/B comparison between different execution engines.
+    let base_seed: Option<u64> = std::env::var("LEAP_SEED")
+        .ok()
+        .and_then(|v| v.parse().ok());
+    let mut cert_counter: u64 = 0;
+
     info!(
-        "E2E execution: engine={}, threads={}, crypto_us={}, accounts={}, pattern={}, tx_size={}",
-        engine, num_threads, crypto_us, num_accounts, pattern_str, tx_size
+        "E2E execution: engine={}, threads={}, crypto_us={}, accounts={}, pattern={}, tx_size={}, seed={:?}",
+        engine, num_threads, crypto_us, num_accounts, pattern_str, tx_size, base_seed
     );
 
     // Create config and executor ONCE before the loop so backpressure can adapt across certificates.
@@ -301,7 +309,11 @@ async fn analyze(mut rx_output: Receiver<Certificate>, batch_size: usize) {
 
         // Generate transfer-only stablecoin transactions.
         // Accounts are pre-funded via funded_balance (simulates persistent state).
-        let mut txns: Vec<StablecoinTx> = generator.generate(num_txns);
+        cert_counter += 1;
+        let mut txns: Vec<StablecoinTx> = match base_seed {
+            Some(seed) => generator.generate_seeded(num_txns, seed + cert_counter),
+            None => generator.generate(num_txns),
+        };
 
         let engine_clone = engine.clone();
         let executor_clone = shared_executor.clone();

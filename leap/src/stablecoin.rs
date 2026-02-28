@@ -4,6 +4,7 @@ use crate::{
     task::{ExecutionStatus, ExecutorTask, Transaction, TransactionOutput},
 };
 use rand::Rng;
+use rand::SeedableRng;
 use rand_distr::{Distribution, Uniform, Zipf};
 use sha2::{Digest, Sha256};
 use std::collections::hash_map::DefaultHasher;
@@ -420,14 +421,23 @@ impl StablecoinWorkloadGenerator {
         }
     }
 
-    /// Generate n stablecoin transfer transactions.
+    /// Generate n stablecoin transfer transactions (random seed).
     pub fn generate(&self, n: usize) -> Vec<StablecoinTx> {
-        let mut rng = rand::thread_rng();
+        self.generate_with_rng(n, &mut rand::thread_rng())
+    }
+
+    /// Generate n stablecoin transfer transactions with a fixed seed.
+    /// Same seed + same n = identical transaction sequence.
+    pub fn generate_seeded(&self, n: usize, seed: u64) -> Vec<StablecoinTx> {
+        self.generate_with_rng(n, &mut rand::rngs::StdRng::seed_from_u64(seed))
+    }
+
+    fn generate_with_rng<R: Rng>(&self, n: usize, rng: &mut R) -> Vec<StablecoinTx> {
         let mut txns = Vec::with_capacity(n);
 
         for i in 0..n {
             let sender = rng.gen_range(0..self.num_accounts) as u64;
-            let receiver = self.pick_receiver(&mut rng, sender);
+            let receiver = self.pick_receiver(rng, sender);
             let amount = rng.gen_range(1..=100);
 
             let mut hasher = DefaultHasher::new();

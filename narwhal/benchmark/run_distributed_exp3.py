@@ -143,6 +143,8 @@ def run_single(bench, sys_name, nodes, workers, rate, run_id, env_vars,
     }
     env = dict(env_vars)
     env['BENCH_TX_SIZE'] = str(TX_SIZE)
+    # Fixed seed: same seed across systems ensures identical txn sequences.
+    env['LEAP_SEED'] = '42'
     # On real servers each node has its own machine → use all cores for LEAP.
     if env.get('LEAP_ENGINE') not in ('serial',):
         env['LEAP_THREADS']      = str(leap_threads)
