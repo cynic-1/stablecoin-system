@@ -214,12 +214,10 @@ fn analyze(mut rx_output: Receiver<Certificate>, batch_size: usize) {
     let num_threads: usize = std::env::var("LEAP_THREADS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(2);
+        .unwrap_or(16);
 
-    // Ensure rayon's global thread pool matches LEAP_THREADS.
-    // Without this, rayon defaults to num_cpus::get() (e.g. 8), so 4 nodes
-    // create 32 CPU-bound rayon threads on 8 cores → extreme oversubscription.
-    // Must be called before any rayon::scope() (first execute_transactions_parallel).
+    // Sync rayon's global thread pool with LEAP_THREADS when not explicitly set.
+    // Prevents rayon from defaulting to num_cpus on localhost multi-node setups.
     if std::env::var("RAYON_NUM_THREADS").is_err() {
         std::env::set_var("RAYON_NUM_THREADS", num_threads.to_string());
     }
@@ -311,10 +309,15 @@ fn analyze(mut rx_output: Receiver<Certificate>, batch_size: usize) {
             ParallelTransactionExecutor::with_config(config.clone())
         });
 
+    let mut recv_start = Instant::now();
+
     while let Some(certificate) = rx_output.blocking_recv() {
+        let recv_ms = recv_start.elapsed().as_millis();
+
         let num_batches = certificate.header.payload.len();
         let num_txns = num_batches * batch_size / tx_size;
         if num_txns == 0 {
+            recv_start = Instant::now();
             continue;
         }
 
@@ -325,18 +328,21 @@ fn analyze(mut rx_output: Receiver<Certificate>, batch_size: usize) {
         // Generate transfer-only stablecoin transactions.
         // Accounts are pre-funded via funded_balance (simulates persistent state).
         cert_counter += 1;
+        let gen_start = Instant::now();
         let mut txns: Vec<StablecoinTx> = match base_seed {
             Some(seed) => generator.generate_seeded(num_txns, seed + cert_counter),
             None => generator.generate(num_txns),
         };
+        let gen_ms = gen_start.elapsed().as_millis();
 
         let exec_start = Instant::now();
 
         // Execute directly on this thread (no spawn_blocking overhead).
         // Wrap in catch_unwind to prevent a rayon panic from killing the thread.
-        let exec_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> ExecCounts {
+        let exec_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> (ExecCounts, u128, u128) {
             match engine.as_str() {
                 "leap" => {
+                    let prep_start = Instant::now();
                     cado_ordering(&mut txns);
                     let config = leap_config.as_ref().unwrap();
                     let exec = executor.as_mut().unwrap();
@@ -360,10 +366,14 @@ fn analyze(mut rx_output: Receiver<Certificate>, batch_size: usize) {
                     };
 
                     exec.set_segment_bounds(bounds, plan.txn_to_segment(num_txns_total));
-                    match exec.execute_transactions_parallel(args, txns) {
+                    let prep_ms = prep_start.elapsed().as_millis();
+                    let run_start = Instant::now();
+                    let counts = match exec.execute_transactions_parallel(args, txns) {
                         Ok(outputs) => count_parallel_outcomes(&outputs),
                         Err(_) => ExecCounts::default(),
-                    }
+                    };
+                    let run_ms = run_start.elapsed().as_millis();
+                    (counts, prep_ms, run_ms)
                 }
                 "leap_base" => {
                     // No CADO ordering: baseline uses random transaction order,
@@ -374,15 +384,20 @@ fn analyze(mut rx_output: Receiver<Certificate>, batch_size: usize) {
                         hot_delta: None,
                         funded_balance: 1_000_000,
                     };
-                    match exec.execute_transactions_parallel(args, txns) {
+                    let run_start = Instant::now();
+                    let counts = match exec.execute_transactions_parallel(args, txns) {
                         Ok(outputs) => count_parallel_outcomes(&outputs),
                         Err(_) => ExecCounts::default(),
-                    }
+                    };
+                    let run_ms = run_start.elapsed().as_millis();
+                    (counts, 0, run_ms)
                 }
                 _ => {
                     // serial
+                    let run_start = Instant::now();
                     let (_state, counts) = serial_execute_counted(&txns, crypto_iters, 1_000_000);
-                    counts
+                    let run_ms = run_start.elapsed().as_millis();
+                    (counts, 0, run_ms)
                 }
             }
         }));
@@ -392,14 +407,18 @@ fn analyze(mut rx_output: Receiver<Certificate>, batch_size: usize) {
         match exec_result {
             Err(_) => {
                 info!("Execution error B{}({}) : panic in executor", round, num_txns);
+                recv_start = Instant::now();
                 continue;
             }
-            Ok(counts) => {
+            Ok((counts, prep_ms, run_ms)) => {
                 // Log execution stats (one line per certificate, for TPS/success rate).
+                // Phase timing: recv_ms=wait for channel, gen_ms=txn generation,
+                // prep_ms=CADO+HotDelta+DomainPlan, run_ms=parallel execution.
                 info!(
-                    "ExecStats B{} total={} ok={} fail={} exec_ms={}",
+                    "ExecStats B{} total={} ok={} fail={} exec_ms={} recv_ms={} gen_ms={} prep_ms={} run_ms={}",
                     round, counts.total, counts.successful,
-                    counts.total - counts.successful, exec_ms
+                    counts.total - counts.successful, exec_ms,
+                    recv_ms, gen_ms, prep_ms, run_ms
                 );
             }
         }
@@ -411,5 +430,7 @@ fn analyze(mut rx_output: Receiver<Certificate>, batch_size: usize) {
                 round, num_txns, digest, exec_ms
             );
         }
+
+        recv_start = Instant::now();
     }
 }
