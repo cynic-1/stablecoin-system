@@ -97,6 +97,7 @@ class Bench:
         try:
             g = Group(*hosts, user=self._user, connect_kwargs=self.connect)
             g.run(' && '.join(cmd), hide=True)
+            g.close()
             Print.heading(f'Initialized testbed of {len(hosts)} nodes')
         except (GroupException, ExecutionError) as e:
             e = FabricError(e) if isinstance(e, GroupException) else e
@@ -111,6 +112,7 @@ class Bench:
         try:
             g = Group(*hosts, user=self._user, connect_kwargs=self.connect)
             g.run(' && '.join(cmd), hide=True)
+            g.close()
         except GroupException as e:
             raise BenchError('Failed to kill nodes', FabricError(e))
 
@@ -155,6 +157,7 @@ class Bench:
         c = Connection(host, user=self._user, connect_kwargs=self.connect)
         output = c.run(cmd, hide=True)
         self._check_stderr(output)
+        c.close()
 
     def _remote_workspace(self):
         """Remote path to the narwhal workspace (accounts for repo subdir)."""
@@ -185,6 +188,7 @@ class Bench:
         ]
         g = Group(*ips, user=self._user, connect_kwargs=self.connect)
         g.run(' && '.join(cmd), hide=False)
+        g.close()
 
     def _config(self, hosts, node_parameters, bench_parameters):
         Print.info('Generating configuration files...')
@@ -235,6 +239,7 @@ class Bench:
                 c.put(PathMaker.committee_file(), '.')
                 c.put(PathMaker.key_file(i), '.')
                 c.put(PathMaker.parameters_file(), '.')
+                c.close()
 
         return committee
 
@@ -313,13 +318,14 @@ class Bench:
                 host = Committee.ip(address)
                 c = Connection(host, user=self._user, connect_kwargs=self.connect)
                 c.get(
-                    PathMaker.client_log_file(i, id), 
+                    PathMaker.client_log_file(i, id),
                     local=PathMaker.client_log_file(i, id)
                 )
                 c.get(
-                    PathMaker.worker_log_file(i, id), 
+                    PathMaker.worker_log_file(i, id),
                     local=PathMaker.worker_log_file(i, id)
                 )
+                c.close()
 
         primary_addresses = committee.primary_addresses(faults)
         progress = progress_bar(primary_addresses, prefix='Downloading primaries logs:')
@@ -327,9 +333,10 @@ class Bench:
             host = Committee.ip(address)
             c = Connection(host, user=self._user, connect_kwargs=self.connect)
             c.get(
-                PathMaker.primary_log_file(i), 
+                PathMaker.primary_log_file(i),
                 local=PathMaker.primary_log_file(i)
             )
+            c.close()
 
         # Parse logs and return the parser.
         Print.info('Parsing logs and computing performance...')
