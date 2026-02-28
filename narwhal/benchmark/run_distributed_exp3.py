@@ -206,14 +206,14 @@ def print_summary(results, group_keys):
     for r in results:
         grouped[tuple(r[k] for k in group_keys)].append(r)
     header = ''.join(f'{k:<20}' for k in group_keys)
-    print(f"{header} {'SC.TPS':>10} {'SC.Lat':>10} {'Committed':>10} {'Executed':>10} {'ExecRate':>10} {'Con.Lat':>10}")
-    print('-' * (20 * len(group_keys) + 64))
+    print(f"{header} {'SC.TPS':>10} {'SC.Lat':>10} {'Committed':>10} {'Executed':>10} {'ExecRate':>10}")
+    print('-' * (20 * len(group_keys) + 54))
     for key, runs in sorted(grouped.items()):
         avg = lambda field: sum(r[field] for r in runs) / len(runs)
         row = ''.join(f'{str(v):<20}' for v in key)
         print(f"{row} {avg('stablecoin_tps'):>10,.0f} {avg('stablecoin_latency_ms'):>10,.0f}"
               f" {avg('committed_txns'):>10,.0f} {avg('executed_txns'):>10,.0f}"
-              f" {avg('exec_ratio'):>10.4f} {avg('consensus_latency_ms'):>10,.0f}")
+              f" {avg('exec_ratio'):>10.4f}")
 
 
 # ── Experiment runners ─────────────────────────────────────────────────────────
