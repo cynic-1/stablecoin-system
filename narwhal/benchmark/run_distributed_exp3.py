@@ -150,7 +150,7 @@ def save_logs(tag, sys_name, rate, run_id):
 
 
 def run_single(bench, sys_name, nodes, workers, rate, run_id, env_vars,
-               leap_threads, tag=''):
+               leap_threads, tokio_threads=4, tag=''):
     bench_params = {
         'faults':    0,
         'nodes':     nodes,
@@ -165,14 +165,17 @@ def run_single(bench, sys_name, nodes, workers, rate, run_id, env_vars,
     env['BENCH_TX_SIZE'] = str(TX_SIZE)
     # Fixed seed: same seed across systems ensures identical txn sequences.
     env['LEAP_SEED'] = '42'
-    # On real servers each node has its own machine → use all cores for LEAP.
+    # Limit tokio threads to avoid CPU contention with rayon.
+    # Both primary and worker processes read this env var.
+    env['TOKIO_WORKER_THREADS'] = str(tokio_threads)
+    # On real servers each node has its own machine → reserve cores for rayon.
     if env.get('LEAP_ENGINE') not in ('serial',):
         env['LEAP_THREADS']      = str(leap_threads)
         env['RAYON_NUM_THREADS'] = str(leap_threads)
 
     print(f"\n{'='*70}")
     print(f"  {sys_name} | n={nodes} w={workers} rate={rate:,} | run={run_id}")
-    print(f"  LEAP_THREADS={env.get('LEAP_THREADS', 'N/A')}")
+    print(f"  rayon={env.get('LEAP_THREADS', 'N/A')}, tokio={tokio_threads}")
     print(f"{'='*70}")
     try:
         result = bench.run(bench_params, NODE_PARAMS, debug=False,
@@ -242,7 +245,8 @@ def print_summary(results, group_keys):
 
 # ── Experiment runners ─────────────────────────────────────────────────────────
 
-def run_exp(bench, tag, systems, nodes_list, workers, rates, patterns, runs, leap_threads):
+def run_exp(bench, tag, systems, nodes_list, workers, rates, patterns, runs,
+            leap_threads, tokio_threads=4):
     total = len(systems) * len(nodes_list) * len(rates) * len(patterns) * runs
     done, results = 0, []
     # Systems in innermost loop: each config runs MP3+LEAP then Tusk+BlockSTM
@@ -266,7 +270,8 @@ def run_exp(bench, tag, systems, nodes_list, workers, rates, patterns, runs, lea
                         else:
                             variable = rate
                         m = run_single(bench, sys_name, nodes, workers, rate,
-                                       run_id, env, leap_threads, tag=tag)
+                                       run_id, env, leap_threads,
+                                       tokio_threads=tokio_threads, tag=tag)
                         if m['status'] == 'ok':
                             results.append(make_row(tag, sys_name, variable,
                                                     nodes, workers, rate, run_id, m))
@@ -274,19 +279,19 @@ def run_exp(bench, tag, systems, nodes_list, workers, rates, patterns, runs, lea
     return results
 
 
-def run_exp_a(bench, leap_threads):
+def run_exp_a(bench, leap_threads, tokio_threads):
     print(f"\n{'#'*70}\n  Exp A: Throughput-Latency Scaling\n{'#'*70}")
     return run_exp(bench, 'Exp-A', EXP_A_SYSTEMS, [EXP_A_NODES], 1,
-                   EXP_A_RATES, ['Uniform'], RUNS, leap_threads)
+                   EXP_A_RATES, ['Uniform'], RUNS, leap_threads, tokio_threads)
 
 
-def run_exp_b(bench, leap_threads):
+def run_exp_b(bench, leap_threads, tokio_threads):
     print(f"\n{'#'*70}\n  Exp B: Conflict Pattern Sensitivity\n{'#'*70}")
     return run_exp(bench, 'Exp-B', EXP_B_SYSTEMS, [EXP_B_NODES], 1,
-                   [EXP_B_RATE], EXP_B_PATTERNS, RUNS, leap_threads)
+                   [EXP_B_RATE], EXP_B_PATTERNS, RUNS, leap_threads, tokio_threads)
 
 
-def run_exp_c(bench, available_hosts, leap_threads):
+def run_exp_c(bench, available_hosts, leap_threads, tokio_threads):
     nodes_list = [4]
     if available_hosts >= 10:
         nodes_list.append(10)
@@ -294,13 +299,13 @@ def run_exp_c(bench, available_hosts, leap_threads):
         nodes_list.append(20)
     print(f"\n{'#'*70}\n  Exp C: Node Scalability — nodes={nodes_list}\n{'#'*70}")
     return run_exp(bench, 'Exp-C', EXP_C_SYSTEMS, nodes_list, 1,
-                   [EXP_C_RATE], ['Uniform'], RUNS, leap_threads)
+                   [EXP_C_RATE], ['Uniform'], RUNS, leap_threads, tokio_threads)
 
 
-def run_exp_d(bench, leap_threads):
+def run_exp_d(bench, leap_threads, tokio_threads):
     print(f"\n{'#'*70}\n  Exp D: Contention × Rate Interaction\n{'#'*70}")
     return run_exp(bench, 'Exp-D', EXP_D_SYSTEMS, [EXP_D_NODES], 1,
-                   EXP_D_RATES, EXP_D_PATTERNS, RUNS, leap_threads)
+                   EXP_D_RATES, EXP_D_PATTERNS, RUNS, leap_threads, tokio_threads)
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
@@ -311,11 +316,15 @@ def main():
     parser.add_argument('exps', nargs='*', default=['A', 'B', 'C', 'D'],
                         help='Experiments to run (A B C D)')
     parser.add_argument('--threads', type=int, default=16,
-                        help='LEAP_THREADS per node (default: 16; set to vCPU count of servers)')
+                        help='Total vCPUs per server (default: 16). Rayon gets threads-4, tokio gets 4.')
+    parser.add_argument('--tokio-threads', type=int, default=4,
+                        help='Tokio worker threads per process (default: 4). Rest goes to rayon.')
     args = parser.parse_args()
 
     exps = [e.upper() for e in args.exps]
-    leap_threads = args.threads
+    tokio_threads = args.tokio_threads
+    rayon_threads = max(1, args.threads - tokio_threads)
+    leap_threads = rayon_threads  # rayon threads = available cores minus tokio
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -331,7 +340,7 @@ def main():
     print(f"Distributed Exp3: End-to-End Pipeline")
     print(f"=======================================")
     print(f"Servers in hosts.json: {available}")
-    print(f"LEAP_THREADS per node: {leap_threads}")
+    print(f"vCPUs per server: {args.threads} (rayon={rayon_threads}, tokio={tokio_threads})")
     print(f"Duration per run: {DURATION}s, Runs per config: {RUNS}")
     manager.print_info()
 
@@ -358,10 +367,10 @@ def main():
     all_results = []
 
     exp_map = {
-        'A': lambda: run_exp_a(bench, leap_threads),
-        'B': lambda: run_exp_b(bench, leap_threads),
-        'C': lambda: run_exp_c(bench, available, leap_threads),
-        'D': lambda: run_exp_d(bench, leap_threads),
+        'A': lambda: run_exp_a(bench, leap_threads, tokio_threads),
+        'B': lambda: run_exp_b(bench, leap_threads, tokio_threads),
+        'C': lambda: run_exp_c(bench, available, leap_threads, tokio_threads),
+        'D': lambda: run_exp_d(bench, leap_threads, tokio_threads),
     }
 
     for exp_id in exps:

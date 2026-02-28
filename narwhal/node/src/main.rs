@@ -21,8 +21,26 @@ use std::time::Instant;
 /// The default channel capacity.
 pub const CHANNEL_CAPACITY: usize = 1_000;
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    // When e2e_exec is enabled, limit tokio worker threads to avoid CPU
+    // contention with rayon. 4 tokio threads suffice for network I/O;
+    // remaining cores are reserved for the parallel executor.
+    // Without e2e_exec, use all CPUs for maximum consensus throughput.
+    let default_tokio: usize = if cfg!(feature = "e2e_exec") { 4 } else { 16 };
+    let tokio_threads: usize = std::env::var("TOKIO_WORKER_THREADS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default_tokio);
+
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(tokio_threads)
+        .enable_all()
+        .build()
+        .expect("Failed to build tokio runtime")
+        .block_on(async_main(tokio_threads))
+}
+
+async fn async_main(tokio_threads: usize) -> Result<()> {
     let matches = App::new(crate_name!())
         .version(crate_version!())
         .about("A research implementation of Narwhal and Tusk.")
@@ -66,7 +84,10 @@ async fn main() -> Result<()> {
         ("generate_keys", Some(sub_matches)) => KeyPair::new()
             .export(sub_matches.value_of("filename").unwrap())
             .context("Failed to generate key pair")?,
-        ("run", Some(sub_matches)) => run(sub_matches).await?,
+        ("run", Some(sub_matches)) => {
+            info!("Tokio worker threads: {}", tokio_threads);
+            run(sub_matches).await?
+        }
         _ => unreachable!(),
     }
     Ok(())
