@@ -34,3 +34,7 @@ path = "src/bin/correctness_check.rs"
 [[bin]]
 name = "repro_e2e_panic"
 path = "src/bin/repro_e2e_panic.rs"
+
+[[bin]]
+name = "exp1_accounts"
+path = "src/bin/exp1_accounts.rs"

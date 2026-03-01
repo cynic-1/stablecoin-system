@@ -35,6 +35,7 @@
   5. `catch_unwind(AssertUnwindSafe(...))` 替代 `JoinError` 处理，防止 rayon panic 杀死线程
   - 文件：`narwhal/node/src/main.rs`（唯一修改文件）
   - 预期效果：exec_ratio 从 ~0.16 提升至接近 1.0（消除 tokio 调度瓶颈）
+- **Exp-1 Account Sweep benchmark** (2026-03-01): New cleaner Exp-1 variant where account count directly controls conflict intensity (fewer accounts = more conflicts). Binary: `leap/src/bin/exp1_accounts.rs`. Parameters: 10K txns, accounts=[2,10,100,1000,10000], threads=[4,8,16,32], 100μs overhead, 3 runs/config, deterministic seeded blocks. Runner: `experiments/exp1_execution/run_accounts.sh`. CSV: `experiments/exp1_execution/results/raw/exp1_accounts.csv`.
 - Reports: `experiments/exp1_execution/REPORT.md`, `experiments/exp2_consensus/REPORT.md`, `experiments/exp3_e2e/REPORT.md`
 - Cross-reference: `summary.md` (English), `summary_zh.md` (Chinese)
 
