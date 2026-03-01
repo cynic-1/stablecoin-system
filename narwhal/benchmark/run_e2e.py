@@ -78,7 +78,7 @@ SYSTEM_MP3_LEAP = (
     {
         'MP3BFT_K_SLOTS': '4',
         'LEAP_ENGINE': 'leap',
-        'LEAP_CRYPTO_US': '10',
+        'LEAP_CRYPTO_US': '100',
         'LEAP_ACCOUNTS': '1000',
     },
 )
@@ -88,7 +88,7 @@ SYSTEM_TUSK_LEAPBASE = (
     'e2e_exec',
     {
         'LEAP_ENGINE': 'leap_base',
-        'LEAP_CRYPTO_US': '10',
+        'LEAP_CRYPTO_US': '100',
         'LEAP_ACCOUNTS': '1000',
     },
 )
@@ -99,13 +99,13 @@ SYSTEM_TUSK_SERIAL = (
     {
         'LEAP_ENGINE': 'serial',
         'LEAP_THREADS': '1',
-        'LEAP_CRYPTO_US': '10',
+        'LEAP_CRYPTO_US': '100',
         'LEAP_ACCOUNTS': '1000',
     },
 )
 
 # E2E-1: Rate scaling
-EXP1_RATES = [10_000, 30_000, 50_000, 70_000, 100_000]
+EXP1_RATES = [10_000, 20_000, 30_000, 50_000, 70_000]
 EXP1_NODES = 4
 EXP1_WORKERS = 1
 EXP1_SYSTEMS = [SYSTEM_MP3_LEAP, SYSTEM_TUSK_LEAPBASE, SYSTEM_TUSK_SERIAL]

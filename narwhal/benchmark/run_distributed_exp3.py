@@ -64,42 +64,46 @@ NODE_PARAMS = {
 SYSTEM_MP3_LEAP = (
     'MP3+LEAP',
     {'MP3BFT_K_SLOTS': '4', 'LEAP_ENGINE': 'leap',
-     'LEAP_CRYPTO_US': '50', 'LEAP_ACCOUNTS': '1000'},
+     'LEAP_CRYPTO_US': '100', 'LEAP_ACCOUNTS': '1000'},
 )
 SYSTEM_TUSK_LEAPBASE = (
     'Tusk+BlockSTM',
     {'CONSENSUS_PROTOCOL': 'tusk', 'LEAP_ENGINE': 'leap_base',
-     'LEAP_CRYPTO_US': '50', 'LEAP_ACCOUNTS': '1000'},
+     'LEAP_CRYPTO_US': '100', 'LEAP_ACCOUNTS': '1000'},
 )
 SYSTEM_TUSK_SERIAL = (
     'Tusk+Serial',
     {'CONSENSUS_PROTOCOL': 'tusk', 'LEAP_ENGINE': 'serial', 'LEAP_THREADS': '1',
-     'LEAP_CRYPTO_US': '50', 'LEAP_ACCOUNTS': '1000'},
+     'LEAP_CRYPTO_US': '100', 'LEAP_ACCOUNTS': '1000'},
 )
 
 # Exp A: throughput-latency scaling under high contention.
-# Align with Exp-1's stress regime where LEAP > BlockSTM is expected.
+# At 100μs overhead, execution capacity with dedicated servers is ~130K (Uniform)
+# but drops to ~26K (LEAP-base H90%) or ~36K (LEAP H90%).
 EXP_A_PATTERN = 'Hotspot_90pct'
-EXP_A_RATES   = [50_000, 100_000, 150_000, 200_000]
+EXP_A_RATES   = [10_000, 30_000, 50_000, 70_000]
 EXP_A_NODES   = 4
 EXP_A_SYSTEMS = [SYSTEM_MP3_LEAP, SYSTEM_TUSK_LEAPBASE, SYSTEM_TUSK_SERIAL]
 
-# Exp B: conflict pattern sensitivity at saturation onset.
-# We focus on contention-heavy patterns to expose execution-engine gap.
-EXP_B_PATTERNS = ['Hotspot_50pct', 'Hotspot_90pct']
-EXP_B_RATE     = 100_000
+# Exp B: conflict pattern sensitivity at rate where contention matters.
+# At 50K rate, consensus delivers ~43K TPS. Under H90% with 100μs overhead,
+# LEAP-base capacity drops to ~26K (bottleneck) while LEAP sustains ~36K.
+EXP_B_PATTERNS = ['Uniform', 'Zipf_0.8', 'Zipf_1.2', 'Hotspot_50pct', 'Hotspot_90pct']
+EXP_B_RATE     = 50_000
 EXP_B_NODES    = 4
 EXP_B_SYSTEMS  = [SYSTEM_MP3_LEAP, SYSTEM_TUSK_LEAPBASE]
 
-# Exp C: node scalability under high contention.
+# Exp C: node scalability under moderate contention.
 EXP_C_PATTERN    = 'Hotspot_90pct'
 EXP_C_NODES_LIST = [4]   # extended dynamically based on available servers
-EXP_C_RATE       = 100_000
+EXP_C_RATE       = 50_000
 EXP_C_SYSTEMS    = [SYSTEM_MP3_LEAP, SYSTEM_TUSK_LEAPBASE]
 
-# Exp D: contention × rate interaction
+# Exp D: contention × rate interaction — the headline experiment.
+# At 100μs overhead, the interesting rate range is 10K-70K where execution
+# transitions from keeping up to becoming the bottleneck under contention.
 EXP_D_PATTERNS = ['Hotspot_50pct', 'Hotspot_90pct']
-EXP_D_RATES    = [100_000, 150_000, 200_000]
+EXP_D_RATES    = [10_000, 30_000, 50_000, 70_000]
 EXP_D_NODES    = 4
 EXP_D_SYSTEMS  = [SYSTEM_MP3_LEAP, SYSTEM_TUSK_LEAPBASE]
 

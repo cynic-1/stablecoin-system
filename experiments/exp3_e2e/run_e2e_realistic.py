@@ -30,7 +30,7 @@ RUST_BINARY = os.path.join(PROJECT_DIR, 'e2e', 'target', 'release', 'e2e_benchma
 
 # Fixed execution parameters
 EXEC_THREADS = 16
-OVERHEAD_US = 10
+OVERHEAD_US = 100
 ACCOUNTS = 1000
 NUM_BLOCKS = 20
 WARMUP_BLOCKS = 5  # handled inside the Rust binary
