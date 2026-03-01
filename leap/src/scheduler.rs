@@ -1,11 +1,9 @@
 use crossbeam::utils::CachePadded;
+use parking_lot::Mutex;
 use std::{
     cmp::min,
     hint,
-    sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-        Mutex,
-    },
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 pub type TxnIndex = usize;
@@ -127,7 +125,7 @@ impl Scheduler {
     /// Try to abort a transaction version. Returns true if successfully transitioned
     /// Executed(incarnation) → Aborting(incarnation).
     pub fn try_abort(&self, txn_idx: TxnIndex, incarnation: Incarnation) -> bool {
-        let mut status = self.txn_status[txn_idx].lock().unwrap();
+        let mut status = self.txn_status[txn_idx].lock();
         if *status == TransactionStatus::Executed(incarnation) {
             *status = TransactionStatus::Aborting(incarnation);
             true
@@ -190,7 +188,7 @@ impl Scheduler {
     /// Add txn_idx as a dependency of dep_txn_idx. Returns true if dependency
     /// was recorded, false if dep_txn_idx already executed.
     pub fn try_add_dependency(&self, txn_idx: TxnIndex, dep_txn_idx: TxnIndex) -> bool {
-        let mut stored_deps = self.txn_dependency[dep_txn_idx].lock().unwrap();
+        let mut stored_deps = self.txn_dependency[dep_txn_idx].lock();
         if self.is_executed(dep_txn_idx).is_some() {
             return false;
         }
@@ -209,7 +207,7 @@ impl Scheduler {
         self.set_executed_status(txn_idx, incarnation);
 
         let txn_deps: Vec<TxnIndex> = {
-            let mut stored_deps = self.txn_dependency[txn_idx].lock().unwrap();
+            let mut stored_deps = self.txn_dependency[txn_idx].lock();
             std::mem::take(&mut stored_deps)
         };
 
@@ -274,7 +272,7 @@ impl Scheduler {
         if txn_idx >= self.txn_status.len() {
             return None;
         }
-        let mut status = self.txn_status[txn_idx].lock().unwrap();
+        let mut status = self.txn_status[txn_idx].lock();
         if let TransactionStatus::ReadyToExecute(incarnation) = *status {
             *status = TransactionStatus::Executing(incarnation);
             Some(incarnation)
@@ -287,7 +285,7 @@ impl Scheduler {
         if txn_idx >= self.txn_status.len() {
             return None;
         }
-        let status = self.txn_status[txn_idx].lock().unwrap();
+        let status = self.txn_status[txn_idx].lock();
         if let TransactionStatus::Executed(incarnation) = *status {
             Some(incarnation)
         } else {
@@ -326,34 +324,22 @@ impl Scheduler {
     }
 
     fn resume(&self, txn_idx: TxnIndex) {
-        let mut status = self.txn_status[txn_idx].lock().unwrap();
-        match *status {
-            TransactionStatus::Executing(incarnation) => {
-                // Normal case: txn bailed out due to read dependency,
-                // hasn't written yet. Safe to re-schedule.
-                *status = TransactionStatus::ReadyToExecute(incarnation + 1);
-            }
-            TransactionStatus::Executed(_) => {
-                // Txn already completed. The decrease_execution_idx will cause
-                // re-validation; if stale, the abort path handles re-execution.
-            }
-            TransactionStatus::Aborting(_) => {
-                // Already being aborted; finish_abort handles re-scheduling.
-            }
-            TransactionStatus::ReadyToExecute(_) => {
-                // Already queued for re-execution.
-            }
+        let mut status = self.txn_status[txn_idx].lock();
+        if let TransactionStatus::Executing(incarnation) = *status {
+            *status = TransactionStatus::ReadyToExecute(incarnation + 1);
+        } else {
+            unreachable!();
         }
     }
 
     fn set_executed_status(&self, txn_idx: TxnIndex, incarnation: Incarnation) {
-        let mut status = self.txn_status[txn_idx].lock().unwrap();
+        let mut status = self.txn_status[txn_idx].lock();
         debug_assert!(*status == TransactionStatus::Executing(incarnation));
         *status = TransactionStatus::Executed(incarnation);
     }
 
     fn set_aborted_status(&self, txn_idx: TxnIndex, incarnation: Incarnation) {
-        let mut status = self.txn_status[txn_idx].lock().unwrap();
+        let mut status = self.txn_status[txn_idx].lock();
         debug_assert!(*status == TransactionStatus::Aborting(incarnation));
         *status = TransactionStatus::ReadyToExecute(incarnation + 1);
     }

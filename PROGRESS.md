@@ -504,6 +504,26 @@ At high uniform rates, execution becomes the bottleneck (consensus TPS >> exec T
 | e2e | 4 | All pass |
 | **Total** | **71** | **All pass** |
 
+## Bugs Found: LEAP-base ≠ Block-STM (2026-03-01)
+
+Exp-1 account-sweep benchmark revealed LEAP-base (supposedly identical to Block-STM) showing anomalous behavior: TPS decreasing with threads at low accounts, LEAP consistently worse than LEAP-base, and **deadlock at accounts=10 threads=16**. Root cause: three deviations from Block-STM's original code.
+
+| # | Severity | Deviation | Impact | File(s) |
+|---|----------|-----------|--------|---------|
+| 29 | **CRITICAL** | `resume()` changed from `unreachable!()` to silent no-op for non-Executing states | Masks scheduler bugs; transactions may never be rescheduled → **deadlock** (accounts=10 threads=16 hang). Original Block-STM proves resume is only called on Executing txns; no-op hides violation of this invariant. | scheduler.rs:328-347 |
+| 30 | MODERATE | **Misdiagnosis corrected**: `diem_infallible::Mutex` wraps `std::sync::Mutex` (not `parking_lot`), so both LEAP and Block-STM used the same underlying mutex. Not a divergence. Switched LEAP to `parking_lot::Mutex` as a performance enhancement (adaptive spinning, no poison, no syscall for uncontended locks). Also eliminates mutex poisoning cascade that may have triggered bug #29's `unreachable!()`. | scheduler.rs, executor.rs (MVHashMapView) |
+| 31 | MODERATE | `assert!` downgraded to `debug_assert!` in mvmemory `write()` | Incarnation monotonicity check disabled in release mode. Combined with bug #29, stale writes from old incarnations go undetected. | mvmemory.rs:69-71 |
+| 32 | **CRITICAL** | `read_u64`/`read_balance` swallow `anyhow::bail!` from MVHashMapView.read() dependency errors | Block-STM's Move VM propagates the bail, ensuring one dependency per incarnation. LEAP's helpers catch `Err(_) → 0` and continue executing, causing multiple `try_add_dependency()` calls to succeed → txn in multiple dep lists → multiple `resume()` calls → `unreachable!()` panic (the actual root cause of bug #29's symptom). | stablecoin.rs:360, executor.rs:59 |
+
+**Fixes applied (2026-03-01):**
+1. Added `parking_lot` dependency; replaced all `std::sync::Mutex` in scheduler.rs and executor.rs with `parking_lot::Mutex` (eliminates poison cascade, modest perf improvement)
+2. Restored `unreachable!()` in `resume()` — with `parking_lot` (no poison), if it triggers it's a genuine state machine violation
+3. Restored `assert!` in mvmemory `write()` (incarnation monotonicity check active in release builds)
+4. Corrected bug #30: `diem_infallible::Mutex` wraps `std::sync::Mutex`, not `parking_lot` — this was not a divergence
+5. **Bug #32 fix**: Guard `try_add_dependency` in MVHashMapView.read() — if `read_dependency` is already set, bail immediately without registering another dependency. Ensures at most one dep per incarnation (matching Block-STM's invariant).
+
+**All prior Exp-1 data invalidated** — LEAP-base was never a faithful Block-STM reproduction (bugs #29/#32 caused deadlocks).
+
 ## Bugs Fixed (E2E Fix Cycle, 2026-02-26)
 
 | # | Severity | Bug | Fix | File(s) |

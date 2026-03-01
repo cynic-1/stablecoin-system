@@ -66,7 +66,7 @@ impl<K: Hash + Clone + Eq, V> MVHashMap<K, V> {
         // A stale write (from a concurrent old incarnation) should not occur because
         // resume() only transitions Executing→ReadyToExecute (bailed txns that
         // never wrote). Debug-assert for safety.
-        debug_assert!(prev
+        assert!(prev
             .map(|cell| cell.incarnation < incarnation)
             .unwrap_or(true));
     }

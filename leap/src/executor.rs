@@ -9,13 +9,13 @@ use crate::{
 };
 use mvhashmap::MVHashMap;
 use rayon::scope;
+use parking_lot::Mutex;
 use std::{
     collections::HashSet,
     hash::Hash,
     marker::PhantomData,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Mutex,
         Arc,
     },
     thread::spawn,
@@ -36,7 +36,7 @@ pub struct MVHashMapView<'a, K, V> {
 
 impl<'a, K: PartialOrd + Send + Clone + Hash + Eq, V: Send + Sync> MVHashMapView<'a, K, V> {
     pub fn take_reads(&self) -> Vec<ReadDescriptor<K>> {
-        let mut reads = self.captured_reads.lock().unwrap();
+        let mut reads = self.captured_reads.lock();
         std::mem::take(&mut reads)
     }
 
@@ -45,7 +45,7 @@ impl<'a, K: PartialOrd + Send + Clone + Hash + Eq, V: Send + Sync> MVHashMapView
             match self.versioned_map.read(key, self.txn_idx) {
                 Ok((version, v)) => {
                     let (txn_idx, incarnation) = version;
-                    self.captured_reads.lock().unwrap().push(
+                    self.captured_reads.lock().push(
                         ReadDescriptor::from(key.clone(), txn_idx, incarnation),
                     );
                     return Ok(Some(v));
@@ -53,11 +53,19 @@ impl<'a, K: PartialOrd + Send + Clone + Hash + Eq, V: Send + Sync> MVHashMapView
                 Err(None) => {
                     self.captured_reads
                         .lock()
-                        .unwrap()
                         .push(ReadDescriptor::from_storage(key.clone()));
                     return Ok(None);
                 }
                 Err(Some(dep_idx)) => {
+                    // If a dependency was already recorded, do not register
+                    // another. Multiple deps for the same incarnation cause
+                    // multiple resume() calls → scheduler panic. This guard
+                    // is needed because LEAP's read helpers (read_u64,
+                    // read_balance) catch the bail and continue executing,
+                    // unlike Block-STM's Move VM which propagates the error.
+                    if self.read_dependency.load(Ordering::Relaxed) {
+                        anyhow::bail!("Read dependency already recorded")
+                    }
                     if self.scheduler.try_add_dependency(self.txn_idx, dep_idx) {
                         self.read_dependency.store(true, Ordering::Relaxed);
                         anyhow::bail!("Read dependency not computed, retry later")
@@ -268,7 +276,7 @@ where
         let last_io = TxnLastInputOutput::new(num_txns);
 
         let bp_window = {
-            let ctrl = self.bp_controller.lock().unwrap();
+            let ctrl = self.bp_controller.lock();
             ctrl.as_ref().map_or(0, |c| c.window())
         };
         let scheduler = if self.segment_bounds.is_empty() {
@@ -301,7 +309,7 @@ where
 
         // Adaptive backpressure: adjust window based on this block's stats.
         {
-            let mut ctrl = self.bp_controller.lock().unwrap();
+            let mut ctrl = self.bp_controller.lock();
             if let Some(ref mut controller) = *ctrl {
                 let (executions, aborts, waits) = scheduler.exec_stats();
                 let stats = BlockExecStats {
