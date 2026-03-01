@@ -50,12 +50,12 @@ RUNS     = 2
 
 NODE_PARAMS = {
     'header_size':      1_000,
-    'max_header_delay': 200,
+    'max_header_delay': 500,
     'gc_depth':         50,
     'sync_retry_delay': 10_000,
     'sync_retry_nodes': 3,
-    'batch_size':       500_000,
-    'max_batch_delay':  200,
+    'batch_size':       5_120_000,   # 5MB → ~10K txns/batch (matches Exp-1 block size)
+    'max_batch_delay':  500,         # 500ms to allow large batches to fill
 }
 
 # Systems: (name, env_vars_base)
