@@ -51,9 +51,11 @@ OUTPUT_DIR = os.path.join(
 # Experiment A: Throughput-Latency Scaling
 # =============================================
 # Purpose: Characterize how the system behaves as input load increases.
-#   Shows consensus TPS ceiling, execution backpressure, latency growth.
+#   At 100μs crypto overhead, execution capacity is ~43K TPS (parallel,
+#   Uniform) and ~12K TPS (serial). So the interesting rate range is
+#   10K-70K, spanning from below execution capacity to deep saturation.
 #   Three systems establish the full hierarchy: Serial < LeapBase ≤ LEAP.
-EXP_A_RATES = [10_000, 50_000, 100_000, 150_000, 200_000]
+EXP_A_RATES = [10_000, 20_000, 30_000, 50_000, 70_000]
 EXP_A_NODES = 4
 EXP_A_WORKERS = 1
 EXP_A_SYSTEMS = [SYSTEM_MP3_LEAP, SYSTEM_TUSK_LEAPBASE, SYSTEM_TUSK_SERIAL]
@@ -62,9 +64,10 @@ EXP_A_SYSTEMS = [SYSTEM_MP3_LEAP, SYSTEM_TUSK_LEAPBASE, SYSTEM_TUSK_SERIAL]
 # Experiment B: Conflict Pattern Sensitivity
 # =============================================
 # Purpose: Show how different access patterns affect execution performance.
-#   At 50K rate execution is not saturated, so TPS differences reflect
-#   pure conflict overhead. LEAP's Hot-Delta + domain-aware scheduling
-#   should stabilize latency across patterns.
+#   At 100μs overhead and 50K input rate, consensus delivers ~43K TPS.
+#   Under Uniform, execution keeps up (43K capacity). Under Hotspot 90%,
+#   LEAP-base collapses to 26K while LEAP maintains 36K (+35% advantage).
+#   This isolates the contention-handling benefit of Hot-Delta sharding.
 EXP_B_PATTERNS = ['Uniform', 'Zipf_0.8', 'Zipf_1.2', 'Hotspot_50pct', 'Hotspot_90pct']
 EXP_B_RATE = 50_000
 EXP_B_NODES = 4
@@ -87,11 +90,13 @@ EXP_C_SYSTEMS = [SYSTEM_MP3_LEAP, SYSTEM_TUSK_LEAPBASE]
 # Experiment D: Contention × Rate Interaction
 # =============================================
 # Purpose: The key experiment — push execution to saturation under
-#   high-conflict patterns. At 150K+ input rate, execution capacity
-#   becomes the bottleneck.  LEAP's contention handling should create
-#   measurable TPS divergence over LeapBase.
+#   high-conflict patterns. At 100μs overhead with 4 threads per node:
+#     LEAP-base H90% capacity = 26K, LEAP H90% capacity = 36K.
+#   At 30K+ rate, LEAP-base becomes execution-bottlenecked while LEAP
+#   can still keep up. At 50K+, both are bottlenecked but LEAP maintains
+#   a ~35% TPS advantage from Hot-Delta sharding.
 EXP_D_PATTERNS = ['Hotspot_50pct', 'Hotspot_90pct']
-EXP_D_RATES = [50_000, 100_000, 150_000, 200_000]
+EXP_D_RATES = [10_000, 30_000, 50_000, 70_000]
 EXP_D_NODES = 4
 EXP_D_WORKERS = 1
 EXP_D_SYSTEMS = [SYSTEM_MP3_LEAP, SYSTEM_TUSK_LEAPBASE]
