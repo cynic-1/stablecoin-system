@@ -324,6 +324,7 @@ class Bench:
             self._background_run(host, cmd, log_file)
 
         # Run the workers (except the faulty ones).
+        # Also apply numactl on multi-NUMA servers for consistent memory placement.
         Print.info('Booting workers...')
         for i, addresses in enumerate(workers_addresses):
             for (id, address) in addresses:
@@ -336,6 +337,9 @@ class Bench:
                     id,  # The worker's id.
                     debug=debug
                 )
+                numa_nodes = self._detect_numa(host)
+                if numa_nodes:
+                    cmd = self._inject_numactl(cmd, '--interleave=all')
                 log_file = PathMaker.worker_log_file(i, id)
                 self._background_run(host, cmd, log_file)
 

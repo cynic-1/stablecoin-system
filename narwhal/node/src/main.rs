@@ -257,22 +257,49 @@ fn analyze(mut rx_output: Receiver<Certificate>, batch_size: usize) {
         .unwrap_or(512);
 
     // Convert crypto_us to SHA-256 iterations via runtime calibration.
-    // Avoids hardcoding 62ns/iter which varies across CPU models and clock speeds.
+    // Uses multi-threaded calibration to capture real all-core frequency.
+    // On multi-socket NUMA machines, single-threaded calibration runs at turbo
+    // boost (~3.9GHz) but the benchmark runs at all-core base (~2.3GHz),
+    // causing crypto overhead to be 50-70% higher than intended.
     let crypto_iters = {
         use leap::stablecoin::simulate_tx_crypto_work;
-        // Warmup
-        let _ = simulate_tx_crypto_work(42, 1000);
-        // Measure
-        let measure_iters = 10_000u32;
+        let cal_threads = num_threads.max(1);
+        let cal_pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(cal_threads)
+            .build()
+            .expect("Failed to create calibration thread pool");
+        let test_iters = 10_000u32;
+
+        // Warmup: all threads run crypto work to stabilize CPU frequency.
+        cal_pool.scope(|s| {
+            for t in 0..cal_threads {
+                s.spawn(move |_| {
+                    for i in 0..10u64 {
+                        simulate_tx_crypto_work((t as u64) * 1000 + i, test_iters);
+                    }
+                });
+            }
+        });
+
+        // Measure: all threads busy, wall-clock ≈ per-thread time.
         let t0 = std::time::Instant::now();
-        let _ = simulate_tx_crypto_work(42, measure_iters);
-        let elapsed_us = t0.elapsed().as_secs_f64() * 1e6;
-        let iters_per_us = measure_iters as f64 / elapsed_us;
+        cal_pool.scope(|s| {
+            for t in 0..cal_threads {
+                s.spawn(move |_| {
+                    for i in 0..100u64 {
+                        simulate_tx_crypto_work((t as u64) * 1000 + i, test_iters);
+                    }
+                });
+            }
+        });
+        let elapsed_us = t0.elapsed().as_micros() as f64 / 100.0;
+        let iters_per_us = test_iters as f64 / elapsed_us;
+
         let result = if crypto_us == 0 { 0u32 } else {
             ((crypto_us as f64 * iters_per_us).round() as u32).max(1)
         };
-        log::info!("SHA-256 calibration: {:.1} iters/μs ({:.0} ns/iter) → {}us = {} iters",
-            iters_per_us, 1000.0 / iters_per_us, crypto_us, result);
+        log::info!("SHA-256 calibration ({} threads): {:.1} iters/μs ({:.0} ns/iter) → {}us = {} iters",
+            cal_threads, iters_per_us, 1000.0 / iters_per_us, crypto_us, result);
         result
     };
 

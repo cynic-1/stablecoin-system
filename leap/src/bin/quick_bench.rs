@@ -67,12 +67,38 @@ fn main() {
 }
 
 fn calibrate_crypto_iters(target_us: u32) -> u32 {
+    let num_threads = num_cpus::get().min(32);
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(num_threads)
+        .build()
+        .expect("Failed to create calibration pool");
     let test_iters = 10_000u32;
+
+    // Warmup all threads to stabilize CPU frequency.
+    pool.scope(|s| {
+        for t in 0..num_threads {
+            s.spawn(move |_| {
+                for i in 0..10u64 {
+                    simulate_tx_crypto_work((t as u64) * 1000 + i, test_iters);
+                }
+            });
+        }
+    });
+
+    // Measure under load: wall-clock ≈ per-thread time.
     let start = Instant::now();
-    for i in 0..100u64 {
-        simulate_tx_crypto_work(i, test_iters);
-    }
+    pool.scope(|s| {
+        for t in 0..num_threads {
+            s.spawn(move |_| {
+                for i in 0..100u64 {
+                    simulate_tx_crypto_work((t as u64) * 1000 + i, test_iters);
+                }
+            });
+        }
+    });
     let elapsed_us = start.elapsed().as_micros() as f64 / 100.0;
     let iters_per_us = test_iters as f64 / elapsed_us;
+    eprintln!("calibration ({} threads): {:.1} iters/us → {}us = {} iters",
+        num_threads, iters_per_us, target_us, (target_us as f64 * iters_per_us).round() as u32);
     (target_us as f64 * iters_per_us).round() as u32
 }

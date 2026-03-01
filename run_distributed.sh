@@ -107,7 +107,7 @@ branch = data['repo']['branch']
 
 cmd = (
     "sudo apt-get update -qq && "
-    "sudo apt-get install -y -qq build-essential cmake clang && "
+    "sudo apt-get install -y -qq build-essential cmake clang numactl && "
     "curl --proto 'https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && "
     "source $HOME/.cargo/env && "
     "rustup default stable && "

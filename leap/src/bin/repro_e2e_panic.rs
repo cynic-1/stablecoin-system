@@ -29,12 +29,39 @@ fn main() {
     let hotspot_pct: f64 = arg_value(&args, "--hotspot").unwrap_or(90.0);
     let seed: u64 = arg_value(&args, "--seed").unwrap_or(42);
 
-    // Calibrate crypto overhead.
-    let _ = simulate_tx_crypto_work(42, 1000); // warmup
+    // Calibrate crypto overhead under multi-threaded load.
+    // On NUMA machines, single-threaded calibration at turbo boost overestimates
+    // iters/us vs the all-core frequency used during actual execution.
+    let cal_threads = num_threads.max(1);
+    let cal_pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(cal_threads)
+        .build()
+        .expect("Failed to create calibration pool");
     let measure_iters = 10_000u32;
+
+    // Warmup all threads to stabilize CPU frequency.
+    cal_pool.scope(|s| {
+        for t in 0..cal_threads {
+            s.spawn(move |_| {
+                for i in 0..10u64 {
+                    simulate_tx_crypto_work((t as u64) * 1000 + i, measure_iters);
+                }
+            });
+        }
+    });
+
+    // Measure under load.
     let t0 = Instant::now();
-    let _ = simulate_tx_crypto_work(42, measure_iters);
-    let elapsed_us = t0.elapsed().as_secs_f64() * 1e6;
+    cal_pool.scope(|s| {
+        for t in 0..cal_threads {
+            s.spawn(move |_| {
+                for i in 0..100u64 {
+                    simulate_tx_crypto_work((t as u64) * 1000 + i, measure_iters);
+                }
+            });
+        }
+    });
+    let elapsed_us = t0.elapsed().as_micros() as f64 / 100.0;
     let iters_per_us = measure_iters as f64 / elapsed_us;
     let crypto_iters = if crypto_us == 0 {
         0u32

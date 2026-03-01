@@ -23,11 +23,12 @@ primary = { path = "../primary" }
 worker = { path = "../worker" }
 consensus = { path = "../consensus" }
 leap = { path = "../../leap", optional = true }
+rayon = { version = "1.8", optional = true }
 
 [features]
 benchmark = ["worker/benchmark", "primary/benchmark", "consensus/benchmark"]
 mp3bft = ["consensus/mp3bft"]
-e2e_exec = ["leap"]
+e2e_exec = ["leap", "rayon"]
 
 [[bin]]         
 name = "benchmark_client"   

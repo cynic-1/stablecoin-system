@@ -535,8 +535,18 @@ Exp-1 account-sweep benchmark revealed LEAP-base (supposedly identical to Block-
 
 **Fixes applied (2026-03-01):**
 1. **Custom rayon `ThreadPool`** per executor, sized to `num_workers`. Prevents NUMA spread — pool threads stay local to the creating thread's NUMA node.
-2. **Multi-threaded calibration**: SHA-256 calibration runs with `max_threads` active simultaneously, capturing real all-core frequency instead of single-core turbo.
+2. **Multi-threaded calibration**: SHA-256 calibration runs with `max_threads` active simultaneously, capturing real all-core frequency instead of single-core turbo. Applied to ALL execution binaries:
+   - `leap/src/main.rs` (standalone benchmark)
+   - `leap/src/bin/exp1_accounts.rs` (account sweep)
+   - `leap/src/bin/ablation_4t.rs` (ablation study)
+   - `leap/src/bin/quick_bench.rs` (quick bench)
+   - `leap/src/bin/repro_e2e_panic.rs` (E2E panic repro)
+   - `narwhal/node/src/main.rs` (E2E consensus node — most critical for distributed experiments)
 3. **NUMA tip**: benchmark prints `numactl --cpunodebind=0 --membind=0` recommendation for multi-socket machines.
+4. **`numactl --interleave=all` auto-injection** in distributed benchmark framework: `remote.py` detects multi-NUMA servers and injects `numactl --interleave=all` for both primary and worker processes.
+5. **`numactl` package** added to distributed server install script (`run_distributed.sh`).
+6. **`rayon` dependency** added to narwhal node (`narwhal/node/Cargo.toml`, optional, tied to `e2e_exec` feature) for multi-threaded calibration.
+7. **NUMA detection in `run_all.sh`**: Exp-1 script detects multi-NUMA topology and warns user to use `numactl`.
 
 **Expected improvement on 128-core NUMA**: ~3× (1.7× from calibration fix × ~2× from NUMA locality).
 
