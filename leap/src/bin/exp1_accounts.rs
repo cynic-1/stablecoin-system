@@ -22,13 +22,17 @@ fn main() {
     let csv_path = env::args().nth(1).unwrap_or_else(|| "exp1_accounts.csv".to_string());
     let cpus = num_cpus::get();
 
-    // Calibrate crypto overhead
-    let iters_per_us = calibrate_iters_per_us();
+    let max_threads = THREADS.iter().copied().filter(|&t| t <= cpus).max().unwrap_or(cpus);
+
+    // Calibrate crypto overhead under multi-threaded load to capture real
+    // all-core frequency (turbo drops on multi-socket NUMA machines).
+    let iters_per_us = calibrate_iters_per_us(max_threads);
     let crypto_iters = (OVERHEAD_US as f64 * iters_per_us).round() as u32;
 
     eprintln!("=== Exp-1 Account Sweep ===");
     eprintln!("CPUs: {}", cpus);
-    eprintln!("Calibration: {:.1} iters/us -> {} iters for {}us", iters_per_us, crypto_iters, OVERHEAD_US);
+    eprintln!("Calibration ({} threads): {:.1} iters/us -> {} iters for {}us", max_threads, iters_per_us, crypto_iters, OVERHEAD_US);
+    eprintln!("TIP: on NUMA machines, pin to one socket: numactl --cpunodebind=0 --membind=0 ./exp1_accounts");
     eprintln!("Block size: {}, Runs: {}", BLOCK_SIZE, RUNS);
     eprintln!("Accounts: {:?}", ACCOUNTS);
     eprintln!("Threads: {:?}", THREADS);
@@ -129,16 +133,39 @@ fn main() {
     eprintln!("\nWrote {} rows to {}", rows.len(), csv_path);
 }
 
-fn calibrate_iters_per_us() -> f64 {
+/// Calibrate SHA-256 iterations per microsecond under multi-threaded load.
+/// On multi-socket machines, single-threaded calibration runs at turbo boost
+/// (~3.9GHz) but the benchmark runs at all-core base (~2.3GHz), causing
+/// crypto overhead to be 50-70% higher than intended.
+fn calibrate_iters_per_us(num_threads: usize) -> f64 {
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(num_threads)
+        .build()
+        .expect("Failed to create calibration thread pool");
     let test_iters = 10_000u32;
-    // warmup
-    for i in 0..10u64 {
-        simulate_tx_crypto_work(i, test_iters);
-    }
+
+    // Warmup: all threads run crypto work to stabilize CPU frequency.
+    pool.scope(|s| {
+        for t in 0..num_threads {
+            s.spawn(move |_| {
+                for i in 0..10u64 {
+                    simulate_tx_crypto_work((t as u64) * 1000 + i, test_iters);
+                }
+            });
+        }
+    });
+
+    // Measure: all threads busy, wall-clock ≈ per-thread time.
     let start = Instant::now();
-    for i in 0..100u64 {
-        simulate_tx_crypto_work(i, test_iters);
-    }
+    pool.scope(|s| {
+        for t in 0..num_threads {
+            s.spawn(move |_| {
+                for i in 0..100u64 {
+                    simulate_tx_crypto_work((t as u64) * 1000 + i, test_iters);
+                }
+            });
+        }
+    });
     let elapsed_us = start.elapsed().as_micros() as f64 / 100.0;
     test_iters as f64 / elapsed_us
 }

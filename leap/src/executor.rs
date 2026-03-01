@@ -8,8 +8,8 @@ use crate::{
     txn_last_input_output::{ReadDescriptor, TxnLastInputOutput},
 };
 use mvhashmap::MVHashMap;
-use rayon::scope;
 use parking_lot::Mutex;
+use rayon::ThreadPool;
 use std::{
     collections::HashSet,
     hash::Hash,
@@ -87,6 +87,10 @@ impl<'a, K: PartialOrd + Send + Clone + Hash + Eq, V: Send + Sync> MVHashMapView
 
 pub struct ParallelTransactionExecutor<T: Transaction, E: ExecutorTask> {
     num_cpus: usize,
+    /// Dedicated rayon thread pool sized to num_cpus. Prevents NUMA spread
+    /// on multi-socket machines where the global pool (num_cpus::get() threads)
+    /// would scatter work across all sockets.
+    thread_pool: ThreadPool,
     /// Persistent backpressure controller (adjusted between blocks).
     bp_controller: Mutex<Option<BackpressureController>>,
     /// Domain-aware segment boundaries for the scheduler.
@@ -102,8 +106,13 @@ where
     E: ExecutorTask<T = T>,
 {
     pub fn new() -> Self {
+        let num_cpus = num_cpus::get();
         Self {
-            num_cpus: num_cpus::get(),
+            num_cpus,
+            thread_pool: rayon::ThreadPoolBuilder::new()
+                .num_threads(num_cpus)
+                .build()
+                .expect("Failed to create rayon thread pool"),
             bp_controller: Mutex::new(None),
             segment_bounds: Vec::new(),
             txn_to_segment: Vec::new(),
@@ -130,6 +139,10 @@ where
         };
         Self {
             num_cpus: num_workers,
+            thread_pool: rayon::ThreadPoolBuilder::new()
+                .num_threads(num_workers)
+                .build()
+                .expect("Failed to create rayon thread pool"),
             bp_controller: Mutex::new(bp),
             segment_bounds: Vec::new(),
             txn_to_segment: Vec::new(),
@@ -285,7 +298,7 @@ where
             Scheduler::with_domain_plan(num_txns, bp_window, self.segment_bounds.clone(), self.txn_to_segment.clone())
         };
 
-        scope(|s| {
+        self.thread_pool.scope(|s| {
             for _ in 0..compute_cpus {
                 s.spawn(|_| {
                     let executor = E::init(executor_args.clone());

@@ -13,17 +13,41 @@ use std::time::Instant;
 /// Target overhead levels in microseconds.
 const OVERHEAD_TARGETS_US: &[u32] = &[0, 1, 3, 10, 50, 100];
 
-/// Measure how many SHA-256 iterations correspond to 1 microsecond on this CPU.
-/// Runs for ~50ms to get a stable estimate.
+/// Measure how many SHA-256 iterations correspond to 1 microsecond on this CPU
+/// under multi-threaded load. Single-threaded calibration overestimates on
+/// multi-socket NUMA machines due to turbo boost (3.9GHz single vs 2.3GHz all-core).
 fn calibrate_iters_per_us() -> f64 {
     use leap::stablecoin::simulate_tx_crypto_work;
-    let warmup_iters = 1000u32;
-    let _ = simulate_tx_crypto_work(42, warmup_iters);
-
+    let num_threads = num_cpus::get().min(32);
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(num_threads)
+        .build()
+        .expect("Failed to create calibration pool");
     let measure_iters = 10_000u32;
+
+    // Warmup all threads to stabilize CPU frequency.
+    pool.scope(|s| {
+        for t in 0..num_threads {
+            s.spawn(move |_| {
+                for i in 0..10u64 {
+                    simulate_tx_crypto_work((t as u64) * 1000 + i, measure_iters);
+                }
+            });
+        }
+    });
+
+    // Measure under load: wall-clock ≈ per-thread time.
     let start = std::time::Instant::now();
-    let _ = simulate_tx_crypto_work(42, measure_iters);
-    let elapsed_us = start.elapsed().as_secs_f64() * 1e6;
+    pool.scope(|s| {
+        for t in 0..num_threads {
+            s.spawn(move |_| {
+                for i in 0..100u64 {
+                    simulate_tx_crypto_work((t as u64) * 1000 + i, measure_iters);
+                }
+            });
+        }
+    });
+    let elapsed_us = start.elapsed().as_micros() as f64 / 100.0;
     measure_iters as f64 / elapsed_us
 }
 

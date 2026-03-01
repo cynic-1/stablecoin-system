@@ -524,6 +524,22 @@ Exp-1 account-sweep benchmark revealed LEAP-base (supposedly identical to Block-
 
 **All prior Exp-1 data invalidated** — LEAP-base was never a faithful Block-STM reproduction (bugs #29/#32 caused deadlocks).
 
+## Bugs Found: NUMA Performance Degradation (2026-03-01)
+
+128-core 4-socket NUMA server (4× Xeon Gold 5218) showed 3.4× slower per-thread TPS than local 16-core machine. Two root causes identified:
+
+| # | Severity | Bug | Impact | File(s) |
+|---|----------|-----|--------|---------|
+| 33 | **CRITICAL** | `rayon::scope` uses global thread pool (128 threads on 128-core machine) | Tasks spread across all 4 NUMA nodes via work-stealing. Every MVHashMap read/write and scheduler atomic crosses QPI interconnect → ~2× penalty. Even with `num_workers=16`, the 16 spawned tasks land on 16 of 128 pool threads scattered across sockets. | executor.rs |
+| 34 | **MAJOR** | Single-threaded SHA-256 calibration runs at turbo boost (3.9GHz), benchmark runs at all-core base (~2.3GHz) | `crypto_iters` calibrated for turbo speed → actual overhead 170μs instead of intended 100μs → 1.7× slower per-thread TPS. | exp1_accounts.rs, main.rs, ablation_4t.rs |
+
+**Fixes applied (2026-03-01):**
+1. **Custom rayon `ThreadPool`** per executor, sized to `num_workers`. Prevents NUMA spread — pool threads stay local to the creating thread's NUMA node.
+2. **Multi-threaded calibration**: SHA-256 calibration runs with `max_threads` active simultaneously, capturing real all-core frequency instead of single-core turbo.
+3. **NUMA tip**: benchmark prints `numactl --cpunodebind=0 --membind=0` recommendation for multi-socket machines.
+
+**Expected improvement on 128-core NUMA**: ~3× (1.7× from calibration fix × ~2× from NUMA locality).
+
 ## Bugs Fixed (E2E Fix Cycle, 2026-02-26)
 
 | # | Severity | Bug | Fix | File(s) |
