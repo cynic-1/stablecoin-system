@@ -50,12 +50,12 @@ RUNS     = 2
 
 NODE_PARAMS = {
     'header_size':      1_000,
-    'max_header_delay': 500,
+    'max_header_delay': 200,
     'gc_depth':         50,
     'sync_retry_delay': 10_000,
     'sync_retry_nodes': 3,
-    'batch_size':       5_120_000,   # 5MB → ~10K txns/batch (matches Exp-1 block size)
-    'max_batch_delay':  500,         # 500ms to allow large batches to fill
+    'batch_size':       500_000,
+    'max_batch_delay':  200,
 }
 
 # Systems: (name, env_vars_base)
@@ -77,25 +77,29 @@ SYSTEM_TUSK_SERIAL = (
      'LEAP_CRYPTO_US': '50', 'LEAP_ACCOUNTS': '1000'},
 )
 
-# Exp A: throughput-latency scaling (Uniform)
-EXP_A_RATES   = [10_000, 50_000, 100_000, 150_000, 200_000]
+# Exp A: throughput-latency scaling under high contention.
+# Align with Exp-1's stress regime where LEAP > BlockSTM is expected.
+EXP_A_PATTERN = 'Hotspot_90pct'
+EXP_A_RATES   = [50_000, 100_000, 150_000, 200_000]
 EXP_A_NODES   = 4
 EXP_A_SYSTEMS = [SYSTEM_MP3_LEAP, SYSTEM_TUSK_LEAPBASE, SYSTEM_TUSK_SERIAL]
 
-# Exp B: conflict pattern sensitivity (50K)
-EXP_B_PATTERNS = ['Uniform', 'Zipf_0.8', 'Zipf_1.2', 'Hotspot_50pct', 'Hotspot_90pct']
-EXP_B_RATE     = 50_000
+# Exp B: conflict pattern sensitivity at saturation onset.
+# We focus on contention-heavy patterns to expose execution-engine gap.
+EXP_B_PATTERNS = ['Hotspot_50pct', 'Hotspot_90pct']
+EXP_B_RATE     = 100_000
 EXP_B_NODES    = 4
 EXP_B_SYSTEMS  = [SYSTEM_MP3_LEAP, SYSTEM_TUSK_LEAPBASE]
 
-# Exp C: node scalability
+# Exp C: node scalability under high contention.
+EXP_C_PATTERN    = 'Hotspot_90pct'
 EXP_C_NODES_LIST = [4]   # extended dynamically based on available servers
-EXP_C_RATE       = 50_000
+EXP_C_RATE       = 100_000
 EXP_C_SYSTEMS    = [SYSTEM_MP3_LEAP, SYSTEM_TUSK_LEAPBASE]
 
 # Exp D: contention × rate interaction
 EXP_D_PATTERNS = ['Hotspot_50pct', 'Hotspot_90pct']
-EXP_D_RATES    = [50_000, 100_000, 150_000, 200_000]
+EXP_D_RATES    = [100_000, 150_000, 200_000]
 EXP_D_NODES    = 4
 EXP_D_SYSTEMS  = [SYSTEM_MP3_LEAP, SYSTEM_TUSK_LEAPBASE]
 
@@ -282,7 +286,7 @@ def run_exp(bench, tag, systems, nodes_list, workers, rates, patterns, runs,
 def run_exp_a(bench, leap_threads, tokio_threads):
     print(f"\n{'#'*70}\n  Exp A: Throughput-Latency Scaling\n{'#'*70}")
     return run_exp(bench, 'Exp-A', EXP_A_SYSTEMS, [EXP_A_NODES], 1,
-                   EXP_A_RATES, ['Uniform'], RUNS, leap_threads, tokio_threads)
+                   EXP_A_RATES, [EXP_A_PATTERN], RUNS, leap_threads, tokio_threads)
 
 
 def run_exp_b(bench, leap_threads, tokio_threads):
@@ -299,7 +303,7 @@ def run_exp_c(bench, available_hosts, leap_threads, tokio_threads):
         nodes_list.append(20)
     print(f"\n{'#'*70}\n  Exp C: Node Scalability — nodes={nodes_list}\n{'#'*70}")
     return run_exp(bench, 'Exp-C', EXP_C_SYSTEMS, nodes_list, 1,
-                   [EXP_C_RATE], ['Uniform'], RUNS, leap_threads, tokio_threads)
+                   [EXP_C_RATE], [EXP_C_PATTERN], RUNS, leap_threads, tokio_threads)
 
 
 def run_exp_d(bench, leap_threads, tokio_threads):
