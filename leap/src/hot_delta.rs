@@ -12,6 +12,8 @@ use std::hash::{Hash, Hasher};
 pub struct HotDeltaManager {
     /// account → number of shards P(a).
     shard_counts: HashMap<u64, usize>,
+    /// Total unique receiver accounts seen in detect_hotspots().
+    unique_receivers: usize,
     /// Frequency threshold to start sharding (default: 10).
     pub theta_1: usize,
     /// Frequency threshold for max shards (default: 50).
@@ -24,6 +26,7 @@ impl HotDeltaManager {
     pub fn new(theta_1: usize, theta_2: usize, p_max: usize) -> Self {
         Self {
             shard_counts: HashMap::new(),
+            unique_receivers: 0,
             theta_1,
             theta_2,
             p_max,
@@ -50,6 +53,7 @@ impl HotDeltaManager {
             }
         }
 
+        self.unique_receivers = freq.len();
         self.shard_counts.clear();
         for (account, count) in freq {
             if count >= self.theta_1 {
@@ -64,6 +68,16 @@ impl HotDeltaManager {
                 self.shard_counts.insert(account, p.min(self.p_max).max(2));
             }
         }
+    }
+
+    /// Returns true if the workload has genuine skew (a small fraction of
+    /// receivers are hot). When false, contention is uniform and HotDelta
+    /// sharding hurts more than it helps (9 reads per hot sender vs 1).
+    pub fn is_skewed(&self) -> bool {
+        if self.unique_receivers == 0 || self.shard_counts.is_empty() {
+            return false;
+        }
+        (self.shard_counts.len() as f64 / self.unique_receivers as f64) < 0.20
     }
 
     /// Returns the shard count for an account (1 = not sharded).

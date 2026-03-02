@@ -1,6 +1,6 @@
 use leap::{
-    cado::cado_ordering,
-    config::LeapConfig,
+    cado::{cado_ordering, cado_with_mode},
+    config::{CadoMode, LeapConfig},
     domain_plan::build_domain_plan,
     executor::ParallelTransactionExecutor,
     hot_delta::HotDeltaManager,
@@ -18,7 +18,6 @@ use std::sync::Arc;
 struct EngineSpec {
     name: &'static str,
     config: LeapConfig,
-    use_cado: bool,
 }
 
 fn engine_specs() -> Vec<EngineSpec> {
@@ -26,25 +25,28 @@ fn engine_specs() -> Vec<EngineSpec> {
         EngineSpec {
             name: "LEAP-base",
             config: LeapConfig::baseline(),
-            use_cado: false,
         },
         EngineSpec {
             name: "LEAP-base+CADO",
-            config: LeapConfig::baseline(),
-            use_cado: true,
+            config: LeapConfig {
+                cado_mode: CadoMode::Interleave,
+                ..LeapConfig::baseline()
+            },
         },
         EngineSpec {
             name: "LEAP",
             config: LeapConfig::full(),
-            use_cado: true,
+        },
+        EngineSpec {
+            name: "LEAP-concat",
+            config: LeapConfig::full_concat(),
         },
         EngineSpec {
             name: "LEAP-noDomain",
             config: LeapConfig {
                 enable_domain_aware: false,
-                ..LeapConfig::full()
+                ..LeapConfig::full_concat()
             },
-            use_cado: true,
         },
         EngineSpec {
             name: "LEAP-noHotDelta",
@@ -52,7 +54,6 @@ fn engine_specs() -> Vec<EngineSpec> {
                 enable_hot_delta: false,
                 ..LeapConfig::full()
             },
-            use_cado: true,
         },
         EngineSpec {
             name: "LEAP-noBP",
@@ -60,7 +61,6 @@ fn engine_specs() -> Vec<EngineSpec> {
                 enable_backpressure: false,
                 ..LeapConfig::full()
             },
-            use_cado: true,
         },
     ]
 }
@@ -69,36 +69,41 @@ fn engine_specs() -> Vec<EngineSpec> {
 // Execute with a specific engine and return final balances
 // ---------------------------------------------------------------------------
 
+/// Returns (balances, whether CADO was actually applied).
 fn run_engine(
     spec: &EngineSpec,
     txns_original: &[StablecoinTx],
     num_threads: usize,
-) -> HashMap<u64, u64> {
+) -> (HashMap<u64, u64>, bool) {
     let mut txns = txns_original.to_vec();
-
-    if spec.use_cado {
-        cado_ordering(&mut txns);
-    }
 
     let config = LeapConfig {
         num_workers: num_threads,
         ..spec.config.clone()
     };
 
+    // Detect skew on original ordering before any reordering.
     let hot_delta = if config.enable_hot_delta {
         let mut mgr = HotDeltaManager::new(config.theta_1, config.theta_2, config.p_max);
         mgr.detect_hotspots(&txns);
-        Some(Arc::new(mgr))
+        if mgr.is_skewed() { Some(Arc::new(mgr)) } else { None }
     } else {
         None
     };
 
+    // Skip CADO when HotDelta is enabled but workload isn't skewed.
+    let use_cado = !(config.enable_hot_delta && hot_delta.is_none());
+    let cado_applied = use_cado && config.use_cado();
+
     let mut executor =
         ParallelTransactionExecutor::<StablecoinTx, StablecoinExecutor>::with_config(config.clone());
-    if config.enable_domain_aware && spec.use_cado {
-        let plan = build_domain_plan(&txns, config.l_max);
-        let num_txns_total = txns.len();
-        executor.set_segment_bounds(plan.segment_bounds(), plan.txn_to_segment(num_txns_total));
+    if use_cado {
+        cado_with_mode(&mut txns, &config.cado_mode);
+        if config.enable_domain_aware && config.cado_mode == CadoMode::Concatenate {
+            let plan = build_domain_plan(&txns, config.l_max);
+            let num_txns_total = txns.len();
+            executor.set_segment_bounds(plan.segment_bounds(), plan.txn_to_segment(num_txns_total));
+        }
     }
 
     let args = StablecoinExecArgs {
@@ -140,7 +145,7 @@ fn run_engine(
         }
     }
 
-    extract_balances(&state)
+    (extract_balances(&state), cado_applied)
 }
 
 fn run_serial(txns: &[StablecoinTx]) -> HashMap<u64, u64> {
@@ -211,8 +216,8 @@ fn main() {
         results.push(("Serial", serial_orig.clone(), "—"));
         results.push(("Serial+CADO", serial_cado.clone(), "—"));
         for spec in &all_engines {
-            let bals = run_engine(spec, &txns, num_threads);
-            let ref_name = if spec.use_cado { "Serial+CADO" } else { "Serial" };
+            let (bals, cado_applied) = run_engine(spec, &txns, num_threads);
+            let ref_name = if cado_applied { "Serial+CADO" } else { "Serial" };
             results.push((spec.name, bals, ref_name));
         }
 

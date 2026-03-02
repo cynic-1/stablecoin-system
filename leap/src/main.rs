@@ -1,6 +1,6 @@
 use leap::{
-    cado::cado_ordering,
-    config::LeapConfig,
+    cado::cado_with_mode,
+    config::{CadoMode, LeapConfig},
     domain_plan::build_domain_plan,
     executor::ParallelTransactionExecutor,
     hot_delta::HotDeltaManager,
@@ -97,17 +97,20 @@ fn scenarios() -> Vec<(&'static str, HotspotConfig)> {
     ]
 }
 
-fn engine_configs() -> Vec<(&'static str, LeapConfig, bool)> {
+fn engine_configs() -> Vec<(&'static str, LeapConfig)> {
     vec![
-        ("LEAP-base", LeapConfig::baseline(), false),
-        ("LEAP", LeapConfig::full(), true),
+        ("LEAP-base", LeapConfig::baseline()),
+        ("LEAP", LeapConfig::full()),
+        (
+            "LEAP-concat",
+            LeapConfig::full_concat(),
+        ),
         (
             "LEAP-noDomain",
             LeapConfig {
                 enable_domain_aware: false,
-                ..LeapConfig::full()
+                ..LeapConfig::full_concat()
             },
-            true,
         ),
         (
             "LEAP-noHotDelta",
@@ -115,7 +118,6 @@ fn engine_configs() -> Vec<(&'static str, LeapConfig, bool)> {
                 enable_hot_delta: false,
                 ..LeapConfig::full()
             },
-            true,
         ),
         (
             "LEAP-noBP",
@@ -123,7 +125,6 @@ fn engine_configs() -> Vec<(&'static str, LeapConfig, bool)> {
                 enable_backpressure: false,
                 ..LeapConfig::full()
             },
-            true,
         ),
     ]
 }
@@ -132,7 +133,6 @@ fn engine_configs() -> Vec<(&'static str, LeapConfig, bool)> {
 fn bench_parallel(
     _engine_name: &str,
     base_config: &LeapConfig,
-    use_cado: bool,
     _scenario_name: &str,
     hotspot: &HotspotConfig,
     num_accounts: usize,
@@ -155,24 +155,25 @@ fn bench_parallel(
 
     for run in 0..(num_warmups + num_runs) {
         let mut txns = gen.generate(num_txns);
-        if use_cado {
-            cado_ordering(&mut txns);
-        }
 
-        // Setup Hot-Delta if enabled (per block — hotspot detection is block-specific).
+        // Detect skew on original ordering before any reordering.
         let hot_delta = if config.enable_hot_delta {
             let mut mgr = HotDeltaManager::new(config.theta_1, config.theta_2, config.p_max);
             mgr.detect_hotspots(&txns);
-            Some(Arc::new(mgr))
+            if mgr.is_skewed() { Some(Arc::new(mgr)) } else { None }
         } else {
             None
         };
 
-        // Setup Domain-Aware scheduling if enabled.
-        if config.enable_domain_aware && use_cado {
-            let plan = build_domain_plan(&txns, config.l_max);
-            let num_txns_total = txns.len();
-            executor.set_segment_bounds(plan.segment_bounds(), plan.txn_to_segment(num_txns_total));
+        // Apply CADO + Domain-Aware only when beneficial.
+        let use_cado = !(config.enable_hot_delta && hot_delta.is_none());
+        if use_cado {
+            cado_with_mode(&mut txns, &config.cado_mode);
+            if config.enable_domain_aware && config.cado_mode == CadoMode::Concatenate {
+                let plan = build_domain_plan(&txns, config.l_max);
+                let num_txns_total = txns.len();
+                executor.set_segment_bounds(plan.segment_bounds(), plan.txn_to_segment(num_txns_total));
+            }
         }
 
         let block_size = txns.len();
@@ -295,7 +296,7 @@ fn main() {
         .1;
     let viability_engine = &all_engines
         .iter()
-        .find(|(n, _, _)| *n == "LEAP-base")
+        .find(|(n, _)| *n == "LEAP-base")
         .unwrap();
 
     let mut viable_overheads: Vec<(&str, u32, u32)> = Vec::new();
@@ -308,7 +309,6 @@ fn main() {
         let parallel_tps = bench_parallel(
             viability_engine.0,
             &viability_engine.1,
-            viability_engine.2,
             "Uniform",
             viability_scenario,
             1000,
@@ -399,9 +399,9 @@ fn main() {
             );
             emit("Serial", scenario_name, 1000, oh_us, 1, &tps);
 
-            // LEAP-base and LEAP
-            for (engine_name, base_config, use_cado) in &all_engines {
-                if *engine_name != "LEAP-base" && *engine_name != "LEAP" {
+            // LEAP-base, LEAP (interleave), and LEAP-concat
+            for (engine_name, base_config) in &all_engines {
+                if *engine_name != "LEAP-base" && *engine_name != "LEAP" && *engine_name != "LEAP-concat" {
                     continue;
                 }
                 for &threads in &part1_threads {
@@ -411,7 +411,6 @@ fn main() {
                     let tps = bench_parallel(
                         engine_name,
                         base_config,
-                        *use_cado,
                         scenario_name,
                         hotspot,
                         1000,
@@ -453,8 +452,8 @@ fn main() {
 
     for &accounts in &part2_accounts {
         eprintln!("  Accounts: {}", accounts);
-        for (engine_name, base_config, use_cado) in &all_engines {
-            if *engine_name != "LEAP-base" && *engine_name != "LEAP" {
+        for (engine_name, base_config) in &all_engines {
+            if *engine_name != "LEAP-base" && *engine_name != "LEAP" && *engine_name != "LEAP-concat" {
                 continue;
             }
             for &threads in &part2_threads {
@@ -464,7 +463,6 @@ fn main() {
                 let tps = bench_parallel(
                     engine_name,
                     base_config,
-                    *use_cado,
                     part2_scenario,
                     part2_hotspot,
                     accounts,
@@ -513,7 +511,7 @@ fn main() {
             .unwrap()
             .1;
 
-        for (engine_name, base_config, use_cado) in &all_engines {
+        for (engine_name, base_config) in &all_engines {
             for &threads in &part3_threads {
                 if threads > max_threads {
                     continue;
@@ -521,7 +519,6 @@ fn main() {
                 let tps = bench_parallel(
                     engine_name,
                     base_config,
-                    *use_cado,
                     scenario_name,
                     hotspot,
                     1000,
@@ -561,9 +558,9 @@ fn main() {
         eprintln!("    Serial: median={:.0} TPS", median(&tps));
         emit("Serial", scenario_name, 1000, part4_oh_us, 1, &tps);
 
-        // LEAP-base and LEAP
-        for (engine_name, base_config, use_cado) in &all_engines {
-            if *engine_name != "LEAP-base" && *engine_name != "LEAP" {
+        // LEAP-base, LEAP (interleave), and LEAP-concat
+        for (engine_name, base_config) in &all_engines {
+            if *engine_name != "LEAP-base" && *engine_name != "LEAP" && *engine_name != "LEAP-concat" {
                 continue;
             }
             for &threads in &part4_threads {
@@ -573,7 +570,6 @@ fn main() {
                 let tps = bench_parallel(
                     engine_name,
                     base_config,
-                    *use_cado,
                     scenario_name,
                     hotspot,
                     1000,

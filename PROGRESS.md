@@ -36,6 +36,15 @@
   - 文件：`narwhal/node/src/main.rs`（唯一修改文件）
   - 预期效果：exec_ratio 从 ~0.16 提升至接近 1.0（消除 tokio 调度瓶颈）
 - **Exp-1 Account Sweep benchmark** (2026-03-01): New cleaner Exp-1 variant where account count directly controls conflict intensity (fewer accounts = more conflicts). Binary: `leap/src/bin/exp1_accounts.rs`. Parameters: 10K txns, accounts=[2,10,100,1000,10000], threads=[4,8,16,32], 100μs overhead, 3 runs/config, deterministic seeded blocks. Runner: `experiments/exp1_execution/run_accounts.sh`. CSV: `experiments/exp1_execution/results/raw/exp1_accounts.csv`.
+- **Adaptive HotDelta/CADO bypass** (2026-03-02): 修复 Uniform 工作负载下 LEAP-interleave 比 LEAP-base 慢 10-44% 的问题:
+  1. **根因**: `detect_hotspots()` 在 Uniform 工作负载下把所有账户都标记为热点（例如 10 个账户 × 10K 交易 → 每个收到 ~1000 >> theta_1=10）。HotDelta 强制每笔热点交易读 1 Balance + 8 Delta shards = **9 次读取替代 1 次**。
+  2. **`is_skewed()` 检测**: 新增 `unique_receivers` 字段和 `is_skewed()` 方法到 `HotDeltaManager`。当 `shard_counts.len() / unique_receivers < 0.20`（少于 20% 接收者是热点）时返回 true = 真正的 skew。Uniform 工作负载: 100% 账户超标 → is_skewed()=false → 跳过 HotDelta。
+  3. **CADO bypass**: CADO 重排序本身在 Uniform 下也产生冲突爆发。当 `enable_hot_delta=true` 但 `is_skewed()=false` 时，同时跳过 CADO 和 HotDelta。保留消融配置的行为（`enable_hot_delta=false` 时不跳过 CADO）。
+  4. **串行基线**: exp1_accounts 新增 `serial_execute()` 作为 threads=1 的基准对照，计算并行加速比。
+  5. **扩展热点场景**: 从 2 个场景（Uniform + Hotspot90）扩展到 6 个：Uniform, Hotspot10, Hotspot30, Hotspot50, Hotspot70, Hotspot90。CSV 新增 `scenario` 列。
+  6. **修改文件 (12)**: `hot_delta.rs`, `exp1_accounts.rs`, `main.rs`, `quick_bench.rs`, `ablation_4t.rs`, `repro_e2e_panic.rs`, `correctness_check.rs`, `narwhal/node/src/main.rs`, `tests.rs`, `config.rs`, `cado.rs`, `Cargo.toml`
+  7. **新测试**: `test_funded_serial_equivalence_interleave_hotspot` — 验证 Hotspot90 工作负载下 HotDelta 激活时的正确性。全部 43 测试通过。
+  8. **预期结果**: Uniform 下 LEAP ≈ LEAP-base（±3%）; Hotspot70/90 下 LEAP 显著优于 LEAP-base（+35-71%@高线程）。
 - Reports: `experiments/exp1_execution/REPORT.md`, `experiments/exp2_consensus/REPORT.md`, `experiments/exp3_e2e/REPORT.md`
 - Cross-reference: `summary.md` (English), `summary_zh.md` (Chinese)
 

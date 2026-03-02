@@ -1,7 +1,7 @@
 use crate::{
     backpressure::BackpressureController,
-    cado::cado_ordering,
-    config::LeapConfig,
+    cado::{cado_ordering, cado_with_mode},
+    config::{CadoMode, LeapConfig},
     domain_plan::build_domain_plan,
     executor::ParallelTransactionExecutor,
     hot_delta::HotDeltaManager,
@@ -410,13 +410,11 @@ fn test_adaptive_backpressure_adjusts() {
 // ---------------------------------------------------------------------------
 
 /// Helper: generate funded txns and verify serial == parallel produces non-empty state.
-fn check_funded_serial_equivalence(config: LeapConfig, use_cado: bool, use_hot_delta: bool) {
+fn check_funded_serial_equivalence(config: LeapConfig, use_hot_delta: bool) {
     let gen = StablecoinWorkloadGenerator::new(50, HotspotConfig::Uniform);
     let mut txns = gen.generate_with_funding(200, 1_000_000);
 
-    if use_cado {
-        cado_ordering(&mut txns);
-    }
+    cado_with_mode(&mut txns, &config.cado_mode);
 
     // Serial execution.
     let serial_state = serial_execute(&txns, 0);
@@ -449,7 +447,7 @@ fn check_funded_serial_equivalence(config: LeapConfig, use_cado: bool, use_hot_d
     let mut executor =
         ParallelTransactionExecutor::<StablecoinTx, StablecoinExecutor>::with_config(config.clone());
 
-    if config.enable_domain_aware && use_cado {
+    if config.enable_domain_aware && config.cado_mode == CadoMode::Concatenate {
         let plan = build_domain_plan(&txns, config.l_max);
         let num_txns_total = txns.len();
         executor.set_segment_bounds(plan.segment_bounds(), plan.txn_to_segment(num_txns_total));
@@ -516,73 +514,185 @@ fn check_funded_serial_equivalence(config: LeapConfig, use_cado: bool, use_hot_d
 fn test_funded_serial_equivalence_baseline() {
     let config = LeapConfig {
         num_workers: 4,
+        cado_mode: CadoMode::Disabled,
         enable_backpressure: false,
         enable_domain_aware: false,
         enable_hot_delta: false,
         ..LeapConfig::default()
     };
-    check_funded_serial_equivalence(config, false, false);
+    check_funded_serial_equivalence(config, false);
 }
 
 #[test]
-fn test_funded_serial_equivalence_with_cado() {
+fn test_funded_serial_equivalence_with_cado_interleave() {
     let config = LeapConfig {
         num_workers: 4,
+        cado_mode: CadoMode::Interleave,
         enable_backpressure: false,
         enable_domain_aware: false,
         enable_hot_delta: false,
         ..LeapConfig::default()
     };
-    check_funded_serial_equivalence(config, true, false);
+    check_funded_serial_equivalence(config, false);
+}
+
+#[test]
+fn test_funded_serial_equivalence_with_cado_concatenate() {
+    let config = LeapConfig {
+        num_workers: 4,
+        cado_mode: CadoMode::Concatenate,
+        enable_backpressure: false,
+        enable_domain_aware: false,
+        enable_hot_delta: false,
+        ..LeapConfig::default()
+    };
+    check_funded_serial_equivalence(config, false);
 }
 
 #[test]
 fn test_funded_serial_equivalence_domain_aware() {
     let config = LeapConfig {
         num_workers: 4,
+        cado_mode: CadoMode::Concatenate,
         enable_backpressure: true,
         enable_domain_aware: true,
         enable_hot_delta: false,
         ..LeapConfig::default()
     };
-    check_funded_serial_equivalence(config, true, false);
+    check_funded_serial_equivalence(config, false);
 }
 
 #[test]
 fn test_funded_serial_equivalence_hot_delta() {
     let config = LeapConfig {
         num_workers: 4,
+        cado_mode: CadoMode::Disabled,
         enable_backpressure: false,
         enable_domain_aware: false,
         enable_hot_delta: true,
         ..LeapConfig::default()
     };
-    check_funded_serial_equivalence(config, false, true);
+    check_funded_serial_equivalence(config, true);
 }
 
 #[test]
 fn test_funded_serial_equivalence_cado_hot_delta() {
-    // CADO + hot-delta (no domain-aware) to isolate interaction.
+    // CADO interleave + hot-delta (no domain-aware) to isolate interaction.
     let config = LeapConfig {
         num_workers: 4,
+        cado_mode: CadoMode::Interleave,
         enable_backpressure: false,
         enable_domain_aware: false,
         enable_hot_delta: true,
         ..LeapConfig::default()
     };
-    check_funded_serial_equivalence(config, true, true);
+    check_funded_serial_equivalence(config, true);
 }
 
 #[test]
 fn test_funded_serial_equivalence_all_opts() {
     let config = LeapConfig {
         num_workers: 4,
-        enable_backpressure: true,
-        enable_domain_aware: true,
-        enable_hot_delta: true,
-        ..LeapConfig::default()
+        ..LeapConfig::full()
     };
-    check_funded_serial_equivalence(config, true, true);
+    check_funded_serial_equivalence(config, true);
+}
+
+#[test]
+fn test_funded_serial_equivalence_all_opts_concat() {
+    let config = LeapConfig {
+        num_workers: 4,
+        ..LeapConfig::full_concat()
+    };
+    check_funded_serial_equivalence(config, true);
+}
+
+#[test]
+fn test_funded_serial_equivalence_interleave_hotspot() {
+    // Hotspot workload with CADO interleave + HotDelta: verifies correctness
+    // when is_skewed() returns true and HotDelta actually activates.
+    let gen = StablecoinWorkloadGenerator::new(
+        50,
+        HotspotConfig::Explicit {
+            num_hotspots: 1,
+            hotspot_ratio: 0.9,
+        },
+    );
+    let config = LeapConfig {
+        num_workers: 4,
+        ..LeapConfig::full()
+    };
+    let mut txns = gen.generate_with_funding(200, 1_000_000);
+    cado_with_mode(&mut txns, &config.cado_mode);
+
+    // Serial execution.
+    let serial_state = serial_execute(&txns, 0);
+    assert!(!serial_state.is_empty());
+
+    // Parallel with Hot-Delta (skew detection should activate sharding).
+    let mut mgr = HotDeltaManager::new(config.theta_1, config.theta_2, config.p_max);
+    mgr.detect_hotspots(&txns);
+    assert!(
+        mgr.is_skewed(),
+        "Hotspot90 workload should be detected as skewed"
+    );
+    let mgr = Arc::new(mgr);
+
+    let args = StablecoinExecArgs {
+        crypto_work_iters: 0,
+        hot_delta: Some(mgr.clone()),
+        funded_balance: 0,
+    };
+
+    let executor =
+        ParallelTransactionExecutor::<StablecoinTx, StablecoinExecutor>::with_config(config);
+    let outputs = executor
+        .execute_transactions_parallel(args, txns)
+        .expect("Interleave+Hotspot execution should succeed");
+
+    // Reconstruct and fold deltas.
+    let mut parallel_state = std::collections::HashMap::new();
+    for output in &outputs {
+        for (k, v) in output.get_writes() {
+            parallel_state.insert(k, v);
+        }
+    }
+    let delta_entries: Vec<(StateKey, u64)> = parallel_state
+        .iter()
+        .filter_map(|(k, &v)| {
+            if let StateKey::Delta(_, _) = k {
+                Some((k.clone(), v))
+            } else {
+                None
+            }
+        })
+        .collect();
+    for (k, delta_val) in &delta_entries {
+        if let StateKey::Delta(account, _) = k {
+            let bal = parallel_state
+                .entry(StateKey::Balance(*account))
+                .or_insert(0);
+            *bal += delta_val;
+        }
+    }
+    for (k, _) in &delta_entries {
+        parallel_state.remove(k);
+    }
+
+    // Compare.
+    for (k, v) in &serial_state {
+        match k {
+            StateKey::Delta(_, _) => continue,
+            _ => {
+                let pv = parallel_state.get(k).unwrap_or(&0);
+                assert_eq!(
+                    v, pv,
+                    "Interleave+Hotspot mismatch on {:?}: serial={}, parallel={}",
+                    k, v, pv
+                );
+            }
+        }
+    }
 }
 
 #[test]

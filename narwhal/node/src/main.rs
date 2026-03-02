@@ -218,8 +218,8 @@ fn analyze(mut rx_output: Receiver<Certificate>, _batch_size: usize) {
 /// Runs on a dedicated OS thread (not tokio) to avoid spawn_blocking overhead per certificate.
 #[cfg(feature = "e2e_exec")]
 fn analyze(mut rx_output: Receiver<Certificate>, batch_size: usize) {
-    use leap::cado::cado_ordering;
-    use leap::config::LeapConfig;
+    use leap::cado::cado_with_mode;
+    use leap::config::{CadoMode, LeapConfig};
     use leap::domain_plan::build_domain_plan;
     use leap::executor::ParallelTransactionExecutor;
     use leap::hot_delta::HotDeltaManager;
@@ -332,16 +332,31 @@ fn analyze(mut rx_output: Receiver<Certificate>, batch_size: usize) {
         .and_then(|v| v.parse().ok());
     let mut cert_counter: u64 = 0;
 
+    // Parse CADO mode from environment.
+    let cado_mode = match std::env::var("LEAP_CADO_MODE").unwrap_or_default().as_str() {
+        "concatenate" | "concat" => CadoMode::Concatenate,
+        "disabled" | "off" => CadoMode::Disabled,
+        _ => CadoMode::Interleave, // default
+    };
+
     let rayon_threads = std::env::var("RAYON_NUM_THREADS").unwrap_or_else(|_| "?".into());
+    let cado_mode_str = match &cado_mode {
+        CadoMode::Disabled => "disabled",
+        CadoMode::Concatenate => "concatenate",
+        CadoMode::Interleave => "interleave",
+    };
     info!(
-        "E2E execution: engine={}, threads={}, rayon={}, crypto_us={}, accounts={}, pattern={}, tx_size={}, seed={:?}",
-        engine, num_threads, rayon_threads, crypto_us, num_accounts, pattern_str, tx_size, base_seed
+        "E2E execution: engine={}, threads={}, rayon={}, crypto_us={}, accounts={}, pattern={}, tx_size={}, seed={:?}, cado_mode={}",
+        engine, num_threads, rayon_threads, crypto_us, num_accounts, pattern_str, tx_size, base_seed, cado_mode_str
     );
 
     // Create config and executor ONCE before the loop so backpressure can adapt across certificates.
     let leap_config: Option<LeapConfig> = match engine.as_str() {
         "leap" => Some(LeapConfig {
             num_workers: num_threads,
+            cado_mode: cado_mode.clone(),
+            // Domain-aware only makes sense with Concatenate mode.
+            enable_domain_aware: cado_mode == CadoMode::Concatenate,
             ..LeapConfig::full()
         }),
         "leap_base" => Some(LeapConfig {
@@ -402,14 +417,17 @@ fn analyze(mut rx_output: Receiver<Certificate>, batch_size: usize) {
                         config.theta_1, config.theta_2, config.p_max,
                     );
                     mgr.detect_hotspots(&txns);
-                    let has_hotspots = !mgr.hot_accounts().is_empty();
+                    let has_hotspots = mgr.is_skewed();
 
                     let (hot_delta, bounds, txn_seg) = if has_hotspots {
                         // Full LEAP stack: CADO → HotDelta → DomainPlan.
-                        cado_ordering(&mut txns);
-                        let plan = build_domain_plan(&txns, config.l_max);
-                        let b = plan.segment_bounds();
-                        let s = plan.txn_to_segment(txns.len());
+                        cado_with_mode(&mut txns, &config.cado_mode);
+                        let (b, s) = if config.enable_domain_aware && config.cado_mode == CadoMode::Concatenate {
+                            let plan = build_domain_plan(&txns, config.l_max);
+                            (plan.segment_bounds(), plan.txn_to_segment(txns.len()))
+                        } else {
+                            (vec![], vec![])
+                        };
                         (Some(Arc::new(mgr)), b, s)
                     } else {
                         // No hotspots: run as plain Block-STM (no CADO overhead).

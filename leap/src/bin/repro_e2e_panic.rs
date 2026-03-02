@@ -7,8 +7,8 @@
 /// Usage:
 ///   cargo run --release --bin repro_e2e_panic [-- --iterations 200 --txns 976]
 use leap::{
-    cado::cado_ordering,
-    config::LeapConfig,
+    cado::cado_with_mode,
+    config::{CadoMode, LeapConfig},
     domain_plan::build_domain_plan,
     executor::ParallelTransactionExecutor,
     hot_delta::HotDeltaManager,
@@ -114,24 +114,29 @@ fn main() {
         let mut txns = generator.generate_seeded(num_txns, seed + i as u64 + 1);
         t_generate += t.elapsed().as_micros();
 
-        // 2. CADO ordering.
-        let t = Instant::now();
-        cado_ordering(&mut txns);
-        t_cado += t.elapsed().as_micros();
-        let num_after_cado = txns.len();
-
-        // 3. HotDelta detection.
+        // 2. HotDelta detection (on original ordering, before CADO).
         let t = Instant::now();
         let mut mgr = HotDeltaManager::new(config.theta_1, config.theta_2, config.p_max);
         mgr.detect_hotspots(&txns);
-        let hot_delta = Some(Arc::new(mgr));
+        let hot_delta = if mgr.is_skewed() { Some(Arc::new(mgr)) } else { None };
         t_hotdelta += t.elapsed().as_micros();
 
-        // 4. Domain-aware plan.
+        // 3. CADO ordering + Domain-aware plan (only when skewed).
         let t = Instant::now();
-        let plan = build_domain_plan(&txns, config.l_max);
-        let bounds = plan.segment_bounds();
-        let txn_to_seg = plan.txn_to_segment(txns.len());
+        if hot_delta.is_some() {
+            cado_with_mode(&mut txns, &config.cado_mode);
+        }
+        t_cado += t.elapsed().as_micros();
+        let num_after_cado = txns.len();
+
+        // 4. Domain-aware plan (only for Concatenate mode and skewed workload).
+        let t = Instant::now();
+        let (bounds, txn_to_seg) = if hot_delta.is_some() && config.enable_domain_aware && config.cado_mode == CadoMode::Concatenate {
+            let plan = build_domain_plan(&txns, config.l_max);
+            (plan.segment_bounds(), plan.txn_to_segment(txns.len()))
+        } else {
+            (vec![], vec![])
+        };
         t_domainplan += t.elapsed().as_micros();
 
         // 5. Set segment bounds on executor (needs mut).

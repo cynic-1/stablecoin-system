@@ -1,10 +1,10 @@
 use std::sync::Arc;
 use std::time::Instant;
 use leap::stablecoin::*;
-use leap::cado::cado_ordering;
+use leap::cado::cado_with_mode;
 use leap::domain_plan::build_domain_plan;
 use leap::hot_delta::HotDeltaManager;
-use leap::config::LeapConfig;
+use leap::config::{CadoMode, LeapConfig};
 use leap::executor::ParallelTransactionExecutor;
 
 fn main() {
@@ -41,14 +41,16 @@ fn main() {
         let mut tps_leap = Vec::new();
         for run in 0..(warmups + runs) {
             let mut txns = gen.generate(num_txns);
-            cado_ordering(&mut txns);
             let mut mgr = HotDeltaManager::new(config_full.theta_1, config_full.theta_2, config_full.p_max);
             mgr.detect_hotspots(&txns);
-            let hot_delta = Some(Arc::new(mgr));
-            if config_full.enable_domain_aware {
-                let plan = build_domain_plan(&txns, config_full.l_max);
-                let n = txns.len();
-                executor_full.set_segment_bounds(plan.segment_bounds(), plan.txn_to_segment(n));
+            let hot_delta = if mgr.is_skewed() { Some(Arc::new(mgr)) } else { None };
+            if hot_delta.is_some() {
+                cado_with_mode(&mut txns, &config_full.cado_mode);
+                if config_full.enable_domain_aware && config_full.cado_mode == CadoMode::Concatenate {
+                    let plan = build_domain_plan(&txns, config_full.l_max);
+                    let n = txns.len();
+                    executor_full.set_segment_bounds(plan.segment_bounds(), plan.txn_to_segment(n));
+                }
             }
             let block_size = txns.len();
             let args = StablecoinExecArgs { crypto_work_iters: crypto_iters, hot_delta, funded_balance: 1_000_000 };

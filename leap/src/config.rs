@@ -1,3 +1,14 @@
+/// CADO ordering mode.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CadoMode {
+    /// No CADO ordering (baseline/Block-STM).
+    Disabled,
+    /// Group same-domain transactions together (original CADO).
+    Concatenate,
+    /// Round-robin interleave across domains (OCC-friendly).
+    Interleave,
+}
+
 /// LEAP configuration parameters.
 #[derive(Clone, Debug)]
 pub struct LeapConfig {
@@ -10,6 +21,7 @@ pub struct LeapConfig {
     pub theta_1: usize,
     pub theta_2: usize,
     pub p_max: usize,
+    pub cado_mode: CadoMode,
     pub enable_domain_aware: bool,
     pub enable_hot_delta: bool,
     pub enable_backpressure: bool,
@@ -27,7 +39,8 @@ impl Default for LeapConfig {
             theta_1: 10,
             theta_2: 50,
             p_max: 8,
-            enable_domain_aware: true,
+            cado_mode: CadoMode::Interleave,
+            enable_domain_aware: false, // auto-disabled for Interleave
             enable_hot_delta: true,
             enable_backpressure: true,
         }
@@ -39,6 +52,7 @@ impl LeapConfig {
     /// but not the official Block-STM implementation).
     pub fn baseline() -> Self {
         Self {
+            cado_mode: CadoMode::Disabled,
             enable_domain_aware: false,
             enable_hot_delta: false,
             enable_backpressure: false,
@@ -46,14 +60,28 @@ impl LeapConfig {
         }
     }
 
-    /// All optimizations enabled.
+    /// All optimizations enabled with interleave CADO (new default).
+    /// Domain-aware scheduling is auto-disabled since interleaving
+    /// spreads domains — no consecutive same-domain segments exist.
     pub fn full() -> Self {
         Self::default()
     }
 
-    /// Only domain-aware scheduling.
+    /// All optimizations enabled with concatenate CADO (original behavior).
+    pub fn full_concat() -> Self {
+        Self {
+            cado_mode: CadoMode::Concatenate,
+            enable_domain_aware: true,
+            enable_hot_delta: true,
+            enable_backpressure: true,
+            ..Self::default()
+        }
+    }
+
+    /// Only domain-aware scheduling (requires concatenate CADO).
     pub fn domain_only() -> Self {
         Self {
+            cado_mode: CadoMode::Concatenate,
             enable_domain_aware: true,
             enable_hot_delta: false,
             enable_backpressure: false,
@@ -79,5 +107,10 @@ impl LeapConfig {
             enable_backpressure: true,
             ..Self::default()
         }
+    }
+
+    /// Whether CADO ordering should be applied.
+    pub fn use_cado(&self) -> bool {
+        self.cado_mode != CadoMode::Disabled
     }
 }

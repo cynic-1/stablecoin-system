@@ -39,3 +39,7 @@ path = "src/bin/repro_e2e_panic.rs"
 [[bin]]
 name = "exp1_accounts"
 path = "src/bin/exp1_accounts.rs"
+
+[[bin]]
+name = "domain_analysis"
+path = "src/bin/domain_analysis.rs"

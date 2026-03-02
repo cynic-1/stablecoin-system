@@ -4,8 +4,8 @@ use std::io::Write;
 use std::sync::Arc;
 use std::time::Instant;
 
-use leap::cado::cado_ordering;
-use leap::config::LeapConfig;
+use leap::cado::cado_with_mode;
+use leap::config::{CadoMode, LeapConfig};
 use leap::domain_plan::build_domain_plan;
 use leap::executor::ParallelTransactionExecutor;
 use leap::hot_delta::HotDeltaManager;
@@ -17,6 +17,39 @@ const ACCOUNTS: &[usize] = &[2, 10, 100, 1000, 10000];
 const THREADS: &[usize] = &[4, 8, 16, 32];
 const RUNS: usize = 3;
 const FUNDED_BALANCE: u64 = 1_000_000;
+
+fn scenarios() -> Vec<(&'static str, HotspotConfig)> {
+    vec![
+        ("Uniform", HotspotConfig::Uniform),
+        ("Hotspot10", HotspotConfig::Explicit { num_hotspots: 1, hotspot_ratio: 0.10 }),
+        ("Hotspot30", HotspotConfig::Explicit { num_hotspots: 1, hotspot_ratio: 0.30 }),
+        ("Hotspot50", HotspotConfig::Explicit { num_hotspots: 1, hotspot_ratio: 0.50 }),
+        ("Hotspot70", HotspotConfig::Explicit { num_hotspots: 1, hotspot_ratio: 0.70 }),
+        ("Hotspot90", HotspotConfig::Explicit { num_hotspots: 1, hotspot_ratio: 0.90 }),
+    ]
+}
+
+struct EngineSpec {
+    name: &'static str,
+    config: LeapConfig,
+}
+
+fn engine_specs() -> Vec<EngineSpec> {
+    vec![
+        EngineSpec {
+            name: "LEAP-base",
+            config: LeapConfig::baseline(),
+        },
+        EngineSpec {
+            name: "LEAP-concat",
+            config: LeapConfig::full_concat(),
+        },
+        EngineSpec {
+            name: "LEAP-interleave",
+            config: LeapConfig::full(),
+        },
+    ]
+}
 
 fn main() {
     let csv_path = env::args().nth(1).unwrap_or_else(|| "exp1_accounts.csv".to_string());
@@ -36,97 +69,123 @@ fn main() {
     eprintln!("Block size: {}, Runs: {}", BLOCK_SIZE, RUNS);
     eprintln!("Accounts: {:?}", ACCOUNTS);
     eprintln!("Threads: {:?}", THREADS);
+    let all_scenarios = scenarios();
+    eprintln!("Scenarios: {:?}", all_scenarios.iter().map(|(n, _)| n).collect::<Vec<_>>());
+    eprintln!("Engines: LEAP-base, LEAP-concat, LEAP-interleave");
     eprintln!();
+
+    let engines = engine_specs();
 
     // Warmup: 1 dummy block per engine at (accounts=1000, threads=4)
     {
         eprintln!("Warming up rayon pool...");
         let gen = StablecoinWorkloadGenerator::new(1000, HotspotConfig::Uniform);
-        let args = StablecoinExecArgs { crypto_work_iters: crypto_iters, hot_delta: None, funded_balance: FUNDED_BALANCE };
 
-        let config_base = LeapConfig { num_workers: 4, ..LeapConfig::baseline() };
-        let executor_base = ParallelTransactionExecutor::<StablecoinTx, StablecoinExecutor>::with_config(config_base);
-        let txns = gen.generate(BLOCK_SIZE);
-        let _ = executor_base.execute_transactions_parallel(args.clone(), txns);
-
-        let config_full = LeapConfig { num_workers: 4, ..LeapConfig::full() };
-        let executor_full = ParallelTransactionExecutor::<StablecoinTx, StablecoinExecutor>::with_config(config_full);
-        let txns = gen.generate(BLOCK_SIZE);
-        let args = StablecoinExecArgs { crypto_work_iters: crypto_iters, hot_delta: None, funded_balance: FUNDED_BALANCE };
-        let _ = executor_full.execute_transactions_parallel(args, txns);
+        for spec in &engines {
+            let config = LeapConfig { num_workers: 4, ..spec.config.clone() };
+            let executor = ParallelTransactionExecutor::<StablecoinTx, StablecoinExecutor>::with_config(config);
+            let txns = gen.generate(BLOCK_SIZE);
+            let args = StablecoinExecArgs { crypto_work_iters: crypto_iters, hot_delta: None, funded_balance: FUNDED_BALANCE };
+            let _ = executor.execute_transactions_parallel(args, txns);
+        }
         eprintln!("Warmup done.\n");
     }
 
     let mut rows: Vec<String> = Vec::new();
 
-    for &accounts in ACCOUNTS {
-        let gen = StablecoinWorkloadGenerator::new(accounts, HotspotConfig::Uniform);
+    for &(scenario_name, ref hotspot_config) in &all_scenarios {
+        eprintln!("--- Scenario: {} ---", scenario_name);
 
-        for &threads in THREADS {
-            if threads > cpus {
-                eprintln!("SKIP threads={} > cpus={}", threads, cpus);
-                continue;
-            }
+        for &accounts in ACCOUNTS {
+            let gen = StablecoinWorkloadGenerator::new(accounts, hotspot_config.clone());
 
-            let mut tps_base_runs = Vec::new();
-            let mut tps_leap_runs = Vec::new();
-
+            // Serial baseline (once per scenario×accounts, threads=1).
+            let mut serial_tps_runs = Vec::new();
             for run in 0..RUNS {
                 let seed = (accounts as u64) * 1000 + run as u64;
                 let txns = gen.generate_seeded(BLOCK_SIZE, seed);
-
-                // --- LEAP-base (BlockSTM equivalent): no CADO, no optimizations ---
-                let config_base = LeapConfig { num_workers: threads, ..LeapConfig::baseline() };
-                let executor_base = ParallelTransactionExecutor::<StablecoinTx, StablecoinExecutor>::with_config(config_base);
-                let args_base = StablecoinExecArgs { crypto_work_iters: crypto_iters, hot_delta: None, funded_balance: FUNDED_BALANCE };
                 let start = Instant::now();
-                let _ = executor_base.execute_transactions_parallel(args_base, txns.clone()).unwrap();
-                let elapsed_base = start.elapsed();
-                let tps_base = BLOCK_SIZE as f64 / elapsed_base.as_secs_f64();
+                let _ = serial_execute(&txns, crypto_iters);
+                let elapsed = start.elapsed();
+                let tps = BLOCK_SIZE as f64 / elapsed.as_secs_f64();
+                rows.push(format!("Serial,{},{},1,{},{:.0}", scenario_name, accounts, run, tps));
+                serial_tps_runs.push(tps);
+            }
+            let serial_avg = serial_tps_runs.iter().sum::<f64>() / RUNS as f64;
+            eprintln!("{} accounts={:<5} threads=1  Serial={:>7.0}", scenario_name, accounts, serial_avg);
 
-                // --- LEAP (CADO + all optimizations) ---
-                let mut txns_leap = txns;
-                cado_ordering(&mut txns_leap);
-
-                let config_full = LeapConfig { num_workers: threads, ..LeapConfig::full() };
-                let mut executor_full = ParallelTransactionExecutor::<StablecoinTx, StablecoinExecutor>::with_config(config_full.clone());
-
-                let mut mgr = HotDeltaManager::new(config_full.theta_1, config_full.theta_2, config_full.p_max);
-                mgr.detect_hotspots(&txns_leap);
-                let hot_delta = Some(Arc::new(mgr));
-
-                if config_full.enable_domain_aware {
-                    let plan = build_domain_plan(&txns_leap, config_full.l_max);
-                    let n = txns_leap.len();
-                    executor_full.set_segment_bounds(plan.segment_bounds(), plan.txn_to_segment(n));
+            for &threads in THREADS {
+                if threads > cpus {
+                    eprintln!("SKIP threads={} > cpus={}", threads, cpus);
+                    continue;
                 }
 
-                let args_leap = StablecoinExecArgs { crypto_work_iters: crypto_iters, hot_delta, funded_balance: FUNDED_BALANCE };
-                let start = Instant::now();
-                let _ = executor_full.execute_transactions_parallel(args_leap, txns_leap).unwrap();
-                let elapsed_leap = start.elapsed();
-                let tps_leap = BLOCK_SIZE as f64 / elapsed_leap.as_secs_f64();
+                let mut tps_by_engine: Vec<(&str, Vec<f64>)> = engines.iter().map(|e| (e.name, Vec::new())).collect();
 
-                rows.push(format!("LEAP-base,{},{},{},{:.0}", accounts, threads, run, tps_base));
-                rows.push(format!("LEAP,{},{},{},{:.0}", accounts, threads, run, tps_leap));
+                for run in 0..RUNS {
+                    let seed = (accounts as u64) * 1000 + run as u64;
+                    let txns_original = gen.generate_seeded(BLOCK_SIZE, seed);
 
-                tps_base_runs.push(tps_base);
-                tps_leap_runs.push(tps_leap);
+                    for (eng_idx, spec) in engines.iter().enumerate() {
+                        let mut txns = txns_original.clone();
+                        let config = LeapConfig { num_workers: threads, ..spec.config.clone() };
+
+                        let mut executor = ParallelTransactionExecutor::<StablecoinTx, StablecoinExecutor>::with_config(config.clone());
+
+                        // Detect skew on original ordering before any reordering.
+                        let hot_delta = if config.enable_hot_delta {
+                            let mut mgr = HotDeltaManager::new(config.theta_1, config.theta_2, config.p_max);
+                            mgr.detect_hotspots(&txns);
+                            if mgr.is_skewed() { Some(Arc::new(mgr)) } else { None }
+                        } else {
+                            None
+                        };
+
+                        // Apply CADO + Domain-Aware only when beneficial.
+                        // When enable_hot_delta is true but workload isn't skewed,
+                        // CADO reordering adds overhead without benefit.
+                        let use_cado = !(config.enable_hot_delta && hot_delta.is_none());
+                        if use_cado {
+                            cado_with_mode(&mut txns, &config.cado_mode);
+                            if config.enable_domain_aware && config.cado_mode == CadoMode::Concatenate {
+                                let plan = build_domain_plan(&txns, config.l_max);
+                                let n = txns.len();
+                                executor.set_segment_bounds(plan.segment_bounds(), plan.txn_to_segment(n));
+                            }
+                        }
+
+                        let args = StablecoinExecArgs { crypto_work_iters: crypto_iters, hot_delta, funded_balance: FUNDED_BALANCE };
+                        let start = Instant::now();
+                        let _ = executor.execute_transactions_parallel(args, txns).unwrap();
+                        let elapsed = start.elapsed();
+                        let tps = BLOCK_SIZE as f64 / elapsed.as_secs_f64();
+
+                        rows.push(format!("{},{},{},{},{},{:.0}", spec.name, scenario_name, accounts, threads, run, tps));
+                        tps_by_engine[eng_idx].1.push(tps);
+                    }
+                }
+
+                // Print summary with speedup vs serial
+                let avgs: Vec<f64> = tps_by_engine.iter().map(|(_, v)| v.iter().sum::<f64>() / RUNS as f64).collect();
+                eprint!("{} accounts={:<5} threads={:<2} ", scenario_name, accounts, threads);
+                for (i, (name, _)) in tps_by_engine.iter().enumerate() {
+                    let vs_serial = (avgs[i] / serial_avg - 1.0) * 100.0;
+                    if i == 0 {
+                        eprint!(" {}={:>7.0}({:+.0}%vs serial)", name, avgs[i], vs_serial);
+                    } else {
+                        let vs_base = (avgs[i] - avgs[0]) / avgs[0] * 100.0;
+                        eprint!("  {}={:>7.0}({:+.1}%vs base)", name, avgs[i], vs_base);
+                    }
+                }
+                eprintln!();
             }
-
-            let avg_base: f64 = tps_base_runs.iter().sum::<f64>() / RUNS as f64;
-            let avg_leap: f64 = tps_leap_runs.iter().sum::<f64>() / RUNS as f64;
-            let delta = (avg_leap - avg_base) / avg_base * 100.0;
-            eprintln!(
-                "accounts={:<5} threads={:<2}  LEAP-base={:>7.0}  LEAP={:>7.0}  delta={:+.1}%",
-                accounts, threads, avg_base, avg_leap, delta
-            );
         }
+        eprintln!();
     }
 
     // Write CSV
     let mut f = fs::File::create(&csv_path).expect("cannot create CSV");
-    writeln!(f, "engine,accounts,threads,run,tps").unwrap();
+    writeln!(f, "engine,scenario,accounts,threads,run,tps").unwrap();
     for row in &rows {
         writeln!(f, "{}", row).unwrap();
     }
