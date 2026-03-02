@@ -22,7 +22,11 @@ fi
 
 echo "=== Building LEAP in release mode ==="
 cd "$PROJECT_DIR/leap"
-cargo build --release --bin exp1_accounts 2>&1
+cargo build --release --bin leap_benchmark --bin exp1_accounts 2>&1
+
+echo ""
+echo "=== Running LEAP full benchmark suite ==="
+cargo run --release --bin leap_benchmark -- "$RESULTS_DIR/exp1_execution.csv" 2>&1
 
 echo ""
 echo "=== Running LEAP account-sweep benchmark ==="
@@ -30,5 +34,7 @@ cargo run --release --bin exp1_accounts -- "$RESULTS_DIR/exp1_accounts.csv" 2>&1
 
 echo ""
 echo "=== Benchmark complete ==="
-echo "Raw CSV data: $RESULTS_DIR/exp1_accounts.csv"
+echo "Raw CSV data:"
+echo "  $RESULTS_DIR/exp1_execution.csv"
+echo "  $RESULTS_DIR/exp1_accounts.csv"
 echo "To generate plots: cd $SCRIPT_DIR && python3 plot.py"
