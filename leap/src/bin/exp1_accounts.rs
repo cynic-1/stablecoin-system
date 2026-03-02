@@ -12,7 +12,7 @@ use leap::hot_delta::HotDeltaManager;
 use leap::stablecoin::*;
 
 const BLOCK_SIZE: usize = 10_000;
-const OVERHEAD_US: u32 = 100;
+const TARGET_SERIAL_TPS: f64 = 5_000.0;
 const ACCOUNTS: &[usize] = &[2, 10, 100, 1000, 10000];
 const THREADS: &[usize] = &[4, 8, 16, 32];
 const RUNS: usize = 3;
@@ -55,16 +55,13 @@ fn main() {
     let csv_path = env::args().nth(1).unwrap_or_else(|| "exp1_accounts.csv".to_string());
     let cpus = num_cpus::get();
 
-    let max_threads = THREADS.iter().copied().filter(|&t| t <= cpus).max().unwrap_or(cpus);
-
-    // Calibrate crypto overhead under multi-threaded load to capture real
-    // all-core frequency (turbo drops on multi-socket NUMA machines).
-    let iters_per_us = calibrate_iters_per_us(max_threads);
-    let crypto_iters = (OVERHEAD_US as f64 * iters_per_us).round() as u32;
+    // Calibrate crypto_iters to hit TARGET_SERIAL_TPS on this hardware.
+    // Run a reference serial batch, measure actual TPS, then scale iters.
+    let crypto_iters = calibrate_for_serial_tps(TARGET_SERIAL_TPS);
 
     eprintln!("=== Exp-1 Account Sweep ===");
     eprintln!("CPUs: {}", cpus);
-    eprintln!("Calibration ({} threads): {:.1} iters/us -> {} iters for {}us", max_threads, iters_per_us, crypto_iters, OVERHEAD_US);
+    eprintln!("Calibrated crypto_iters={} for target serial TPS={:.0}", crypto_iters, TARGET_SERIAL_TPS);
     eprintln!("TIP: on NUMA machines, pin to one socket: numactl --cpunodebind=0 --membind=0 ./exp1_accounts");
     eprintln!("Block size: {}, Runs: {}", BLOCK_SIZE, RUNS);
     eprintln!("Accounts: {:?}", ACCOUNTS);
@@ -192,39 +189,28 @@ fn main() {
     eprintln!("\nWrote {} rows to {}", rows.len(), csv_path);
 }
 
-/// Calibrate SHA-256 iterations per microsecond under multi-threaded load.
-/// On multi-socket machines, single-threaded calibration runs at turbo boost
-/// (~3.9GHz) but the benchmark runs at all-core base (~2.3GHz), causing
-/// crypto overhead to be 50-70% higher than intended.
-fn calibrate_iters_per_us(num_threads: usize) -> f64 {
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(num_threads)
-        .build()
-        .expect("Failed to create calibration thread pool");
-    let test_iters = 10_000u32;
+/// Calibrate crypto_iters so that `serial_execute` achieves `target_tps`.
+/// Runs a reference serial batch, measures actual TPS, then linearly scales
+/// the iteration count. This works on any hardware (turbo/NUMA/etc.) because
+/// it measures the same code path that the benchmark uses.
+fn calibrate_for_serial_tps(target_tps: f64) -> u32 {
+    let cal_size: usize = 2000;
+    let ref_iters: u32 = 1000;
+    let gen = StablecoinWorkloadGenerator::new(1000, HotspotConfig::Uniform);
 
-    // Warmup: all threads run crypto work to stabilize CPU frequency.
-    pool.scope(|s| {
-        for t in 0..num_threads {
-            s.spawn(move |_| {
-                for i in 0..10u64 {
-                    simulate_tx_crypto_work((t as u64) * 1000 + i, test_iters);
-                }
-            });
-        }
-    });
+    // Warmup
+    let txns = gen.generate_seeded(cal_size, 99999);
+    let _ = serial_execute(&txns, ref_iters);
 
-    // Measure: all threads busy, wall-clock ≈ per-thread time.
+    // Measure serial TPS at reference iters
+    let txns = gen.generate_seeded(cal_size, 88888);
     let start = Instant::now();
-    pool.scope(|s| {
-        for t in 0..num_threads {
-            s.spawn(move |_| {
-                for i in 0..100u64 {
-                    simulate_tx_crypto_work((t as u64) * 1000 + i, test_iters);
-                }
-            });
-        }
-    });
-    let elapsed_us = start.elapsed().as_micros() as f64 / 100.0;
-    test_iters as f64 / elapsed_us
+    let _ = serial_execute(&txns, ref_iters);
+    let ref_tps = cal_size as f64 / start.elapsed().as_secs_f64();
+
+    // Scale: higher iters → slower serial → lower TPS (linear relationship)
+    let scaled = (ref_iters as f64 * ref_tps / target_tps).round() as u32;
+    eprintln!("Serial calibration: ref_iters={} -> ref_tps={:.0}, scaled_iters={} for target={:.0}",
+        ref_iters, ref_tps, scaled, target_tps);
+    scaled.max(1)
 }

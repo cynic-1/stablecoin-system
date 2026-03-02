@@ -45,6 +45,18 @@
   6. **修改文件 (12)**: `hot_delta.rs`, `exp1_accounts.rs`, `main.rs`, `quick_bench.rs`, `ablation_4t.rs`, `repro_e2e_panic.rs`, `correctness_check.rs`, `narwhal/node/src/main.rs`, `tests.rs`, `config.rs`, `cado.rs`, `Cargo.toml`
   7. **新测试**: `test_funded_serial_equivalence_interleave_hotspot` — 验证 Hotspot90 工作负载下 HotDelta 激活时的正确性。全部 43 测试通过。
   8. **预期结果**: Uniform 下 LEAP ≈ LEAP-base（±3%）; Hotspot70/90 下 LEAP 显著优于 LEAP-base（+35-71%@高线程）。
+- **Exp-1 Hotspot 实验结果分析** (2026-03-02): 6 场景 × 5 账户数 × 3 线程 × 3 引擎 × 3 runs，CSV: `leap/exp1_accounts.csv`。
+  - **Adaptive bypass 验证成功**: Uniform 下 LEAP-interleave vs LEAP-base 差异 ≤3%，`is_skewed()` 正确跳过了 CADO+HotDelta。
+  - **LEAP 优势随热点和账户数单调增大**（LEAP-interleave vs LEAP-base, 10000 accounts）:
+    - Uniform: +0.3%/−0.6%/+1.6% (4T/8T/16T) — 平价
+    - Hotspot30: +0.8%/**+31.9%**/**+172.3%**
+    - Hotspot50: +6.0%/**+114.9%**/**+247.5%**
+    - Hotspot70: +27.8%/**+164.8%**/**+236.7%**
+    - Hotspot90: +68.9%/**+170.2%**/**+244.9%**
+  - **串行基线**: Serial ≈ 13,250 TPS（恒定）。最大并行加速比: Uniform@1000accts@16T = 10.7x; Hotspot90@10000accts@16T LEAP = 3.3x (base 仅 0.94x)。
+  - **理论一致**: (1) HotDelta 分片在真正 skew 下有效; (2) CADO 在高线程数下收益更大; (3) Adaptive bypass 消除 Uniform 开销。
+  - **理论差异**: (1) 少 accounts（2-10）时即使 H90% LEAP 也无优势（所有账户都在同一冲突域）; (2) concat vs interleave 差异 <5%（HotDelta 已稀释排序差异）; (3) 16T base 在高冲突下崩溃比 Amdahl 定律预测更剧烈（abort 级联）; (4) Hotspot10 优势微弱（10% 热点不足以覆盖 CADO 开销）。
+  - **关键结论**: LEAP 目标场景 = 高热点 + 大账户池 + 高线程（现实稳定币特征）。accounts 数量比 hotspot_ratio 更重要。16T 下 base 的崩溃性退化是 LEAP 最强论据。
 - Reports: `experiments/exp1_execution/REPORT.md`, `experiments/exp2_consensus/REPORT.md`, `experiments/exp3_e2e/REPORT.md`
 - Cross-reference: `summary.md` (English), `summary_zh.md` (Chinese)
 
