@@ -397,12 +397,19 @@ fn analyze(mut rx_output: Receiver<Certificate>, batch_size: usize) {
 
     let mut recv_start = Instant::now();
 
+    // When block_size_override is set, accumulate certificates until we have
+    // enough payload-derived transactions to fill one execution block.
+    // This prevents 10x overload where each cert (≈976 payload txns) triggers
+    // a 10K-txn execution, causing queue buildup and 25+ second latency.
+    let mut pending_payload_txns: usize = 0;
+    let mut pending_certs: Vec<(u64, Vec<crypto::Digest>, u128)> = Vec::new(); // (round, digests, recv_ms)
+
     while let Some(certificate) = rx_output.blocking_recv() {
         let recv_ms = recv_start.elapsed().as_millis();
 
         let num_batches = certificate.header.payload.len();
-        let num_txns = block_size_override.unwrap_or(num_batches * batch_size / tx_size);
-        if num_txns == 0 {
+        let payload_txns = num_batches * batch_size / tx_size;
+        if payload_txns == 0 {
             recv_start = Instant::now();
             continue;
         }
@@ -410,6 +417,25 @@ fn analyze(mut rx_output: Receiver<Certificate>, batch_size: usize) {
         let round = certificate.header.round;
         let batch_digests: Vec<crypto::Digest> =
             certificate.header.payload.keys().cloned().collect();
+
+        // Without block_size_override: execute per-certificate as before.
+        // With block_size_override: accumulate until payload >= block_size, then execute once.
+        let num_txns = match block_size_override {
+            None => payload_txns,
+            Some(block_size) => {
+                pending_payload_txns += payload_txns;
+                pending_certs.push((round, batch_digests.clone(), recv_ms));
+                if pending_payload_txns < block_size {
+                    // Not enough yet — continue accumulating.
+                    recv_start = Instant::now();
+                    continue;
+                }
+                // Enough accumulated — execute one block_size block.
+                let n = block_size;
+                pending_payload_txns = 0;
+                n
+            }
+        };
 
         // Generate transfer-only stablecoin transactions.
         // Accounts are pre-funded via funded_balance (simulates persistent state).
@@ -505,6 +531,17 @@ fn analyze(mut rx_output: Receiver<Certificate>, batch_size: usize) {
         match exec_result {
             Err(_) => {
                 info!("Execution error B{}({}) : panic in executor", round, num_txns);
+                // Emit "Executed" lines for accumulated certs so parser can track them.
+                for (pr, pdigests, _) in pending_certs.drain(..) {
+                    for digest in &pdigests {
+                        info!("Executed B{}({}) -> {:?} in {} ms", pr, num_txns, digest, exec_ms);
+                    }
+                }
+                if block_size_override.is_none() {
+                    for digest in &batch_digests {
+                        info!("Executed B{}({}) -> {:?} in {} ms", round, num_txns, digest, exec_ms);
+                    }
+                }
                 recv_start = Instant::now();
                 continue;
             }
@@ -522,11 +559,22 @@ fn analyze(mut rx_output: Receiver<Certificate>, batch_size: usize) {
         }
 
         // Log per-batch digest (same format as "Committed") for the parser.
-        for digest in &batch_digests {
-            info!(
-                "Executed B{}({}) -> {:?} in {} ms",
-                round, num_txns, digest, exec_ms
-            );
+        // Emit for all accumulated certificates (block_size mode) or the current one.
+        for (pr, pdigests, _) in pending_certs.drain(..) {
+            for digest in &pdigests {
+                info!(
+                    "Executed B{}({}) -> {:?} in {} ms",
+                    pr, num_txns, digest, exec_ms
+                );
+            }
+        }
+        if block_size_override.is_none() {
+            for digest in &batch_digests {
+                info!(
+                    "Executed B{}({}) -> {:?} in {} ms",
+                    round, num_txns, digest, exec_ms
+                );
+            }
         }
 
         recv_start = Instant::now();
