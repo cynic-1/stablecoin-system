@@ -12,10 +12,12 @@
 #   ./run_distributed.sh exp1            # LEAP benchmark (always local)
 #   ./run_distributed.sh exp2            # consensus benchmark (distributed)
 #   ./run_distributed.sh exp3            # E2E pipeline benchmark (distributed)
+#   ./run_distributed.sh exp3v2          # E2E v2: redesigned (TARGET_TPS=5000, BLOCK_SIZE=10K)
 #   ./run_distributed.sh exp2 A          # only Exp2-A (rate scaling)
 #   ./run_distributed.sh exp3 A B        # only Exp3-A and Exp3-B
 #   ./run_distributed.sh exp3 --threads 32  # E2E with 32 threads/node
-#   ./run_distributed.sh all             # run exp1 + exp2 + exp3
+#   ./run_distributed.sh exp3v2 A --threads 32  # exp3v2 Exp-A with 32 threads
+#   ./run_distributed.sh all             # run exp1 + exp2 + exp3 + exp3v2
 #   ./run_distributed.sh logs            # list saved remote logs
 #   ./run_distributed.sh logs exp3 grep ExecStats  # search logs
 
@@ -180,6 +182,23 @@ run_exp3() {
     python3 plot_complete.py 2>&1 || warn "Plot failed (install matplotlib: pip3 install matplotlib)"
 }
 
+run_exp3v2() {
+    section "Exp3v2: E2E v2 — Redesigned (TARGET_TPS=5000, BLOCK_SIZE=10K)"
+    check_hosts_json
+    local EXTRA_ARGS=("$@")
+
+    # Build narwhal with all E2E features.
+    info "Building narwhal locally (benchmark + e2e_exec + mp3bft) ..."
+    cd "$SCRIPT_DIR/narwhal"
+    cargo build --quiet --release --features benchmark,e2e_exec,mp3bft 2>&1
+
+    info "Running distributed exp3v2 benchmarks ..."
+    cd "$BENCHMARK_DIR"
+    python3 run_e2e_v2.py "${EXTRA_ARGS[@]}"
+
+    info "Exp3v2 complete."
+}
+
 # ── Dispatch ───────────────────────────────────────────────────────────────────
 COMMAND="${1:-help}"
 shift || true  # remaining args forwarded to sub-commands
@@ -201,15 +220,20 @@ case "$COMMAND" in
     exp3)
         run_exp3 "$@"
         ;;
+    exp3v2)
+        run_exp3v2 "$@"
+        ;;
     all)
         run_exp1
         run_exp2
         run_exp3
+        run_exp3v2
         section "All experiments complete"
         echo "Results:"
         echo "  Exp1: experiments/exp1_execution/results/raw/"
         echo "  Exp2: experiments/exp2_consensus/results/raw/exp2_distributed_*.csv"
         echo "  Exp3: experiments/exp3_e2e/results/raw/exp3_distributed_*.csv"
+        echo "  Exp3v2: experiments/exp3_e2e/results/raw/exp3_e2e_v2.csv"
         ;;
     logs)
         section "Saved Remote Logs"

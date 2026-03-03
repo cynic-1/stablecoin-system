@@ -224,7 +224,7 @@ fn analyze(mut rx_output: Receiver<Certificate>, batch_size: usize) {
     use leap::executor::ParallelTransactionExecutor;
     use leap::hot_delta::HotDeltaManager;
     use leap::stablecoin::{
-        count_parallel_outcomes, serial_execute_counted, ExecCounts,
+        count_parallel_outcomes, serial_execute, serial_execute_counted, ExecCounts,
         HotspotConfig, StablecoinExecArgs, StablecoinExecutor,
         StablecoinTx, StablecoinWorkloadGenerator,
     };
@@ -242,10 +242,6 @@ fn analyze(mut rx_output: Receiver<Certificate>, batch_size: usize) {
     if std::env::var("RAYON_NUM_THREADS").is_err() {
         std::env::set_var("RAYON_NUM_THREADS", num_threads.to_string());
     }
-    let crypto_us: u32 = std::env::var("LEAP_CRYPTO_US")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(10);
     let num_accounts: usize = std::env::var("LEAP_ACCOUNTS")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -256,12 +252,39 @@ fn analyze(mut rx_output: Receiver<Certificate>, batch_size: usize) {
         .and_then(|v| v.parse().ok())
         .unwrap_or(512);
 
-    // Convert crypto_us to SHA-256 iterations via runtime calibration.
-    // Uses multi-threaded calibration to capture real all-core frequency.
-    // On multi-socket NUMA machines, single-threaded calibration runs at turbo
-    // boost (~3.9GHz) but the benchmark runs at all-core base (~2.3GHz),
-    // causing crypto overhead to be 50-70% higher than intended.
-    let crypto_iters = {
+    // Fixed block size override: if set, every certificate produces exactly
+    // this many transactions regardless of consensus batch payload size.
+    let block_size_override: Option<usize> = std::env::var("LEAP_BLOCK_SIZE")
+        .ok()
+        .and_then(|v| v.parse().ok());
+
+    // Crypto work calibration — two modes:
+    //   LEAP_TARGET_TPS: calibrate iters so serial execution hits target TPS
+    //                    (same algorithm as exp1_accounts.rs)
+    //   LEAP_CRYPTO_US:  calibrate iters for a target per-txn microsecond cost
+    //                    (legacy mode, backward compatible)
+    let crypto_iters = if let Ok(target_str) = std::env::var("LEAP_TARGET_TPS") {
+        let target_tps: f64 = target_str.parse().unwrap_or(5000.0);
+        // Same calibration as exp1_accounts: measure serial TPS at ref iters, scale.
+        let cal_size: usize = 2000;
+        let ref_iters: u32 = 1000;
+        let cal_gen = StablecoinWorkloadGenerator::new(1000, HotspotConfig::Uniform);
+        let warmup_txns = cal_gen.generate_seeded(cal_size, 99999);
+        let _ = serial_execute(&warmup_txns, ref_iters);
+        let cal_txns = cal_gen.generate_seeded(cal_size, 88888);
+        let t0 = Instant::now();
+        let _ = serial_execute(&cal_txns, ref_iters);
+        let ref_tps = cal_size as f64 / t0.elapsed().as_secs_f64();
+        let result = (ref_iters as f64 * ref_tps / target_tps).round().max(1.0) as u32;
+        log::info!("Serial-TPS calibration: target={:.0}, ref_iters={} -> ref_tps={:.0}, crypto_iters={}",
+            target_tps, ref_iters, ref_tps, result);
+        result
+    } else {
+        // Legacy LEAP_CRYPTO_US calibration (multi-threaded for NUMA accuracy).
+        let crypto_us: u32 = std::env::var("LEAP_CRYPTO_US")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(10);
         use leap::stablecoin::simulate_tx_crypto_work;
         let cal_threads = num_threads.max(1);
         let cal_pool = rayon::ThreadPoolBuilder::new()
@@ -346,8 +369,8 @@ fn analyze(mut rx_output: Receiver<Certificate>, batch_size: usize) {
         CadoMode::Interleave => "interleave",
     };
     info!(
-        "E2E execution: engine={}, threads={}, rayon={}, crypto_us={}, accounts={}, pattern={}, tx_size={}, seed={:?}, cado_mode={}",
-        engine, num_threads, rayon_threads, crypto_us, num_accounts, pattern_str, tx_size, base_seed, cado_mode_str
+        "E2E execution: engine={}, threads={}, rayon={}, crypto_iters={}, accounts={}, pattern={}, tx_size={}, block_size={:?}, seed={:?}, cado_mode={}",
+        engine, num_threads, rayon_threads, crypto_iters, num_accounts, pattern_str, tx_size, block_size_override, base_seed, cado_mode_str
     );
 
     // Create config and executor ONCE before the loop so backpressure can adapt across certificates.
@@ -378,7 +401,7 @@ fn analyze(mut rx_output: Receiver<Certificate>, batch_size: usize) {
         let recv_ms = recv_start.elapsed().as_millis();
 
         let num_batches = certificate.header.payload.len();
-        let num_txns = num_batches * batch_size / tx_size;
+        let num_txns = block_size_override.unwrap_or(num_batches * batch_size / tx_size);
         if num_txns == 0 {
             recv_start = Instant::now();
             continue;
